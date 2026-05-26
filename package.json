@@ -1,6 +1,6 @@
 {
   "name": "@idevconn/llm-router",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Library-agnostic LLM router: provider-neutral strategy interface + registry with env-driven platform selection and BYOK support. Opt-in adapters for Gemini, Claude, and Grok via subpath exports.",
   "license": "Apache-2.0",
   "author": "iDEVconn",
