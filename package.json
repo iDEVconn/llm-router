@@ -1,6 +1,6 @@
 {
   "name": "@idevconn/llm-router",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Library-agnostic LLM router: provider-neutral strategy interface + registry with env-driven platform selection and BYOK support. Opt-in adapters for Gemini, Claude, and Grok via subpath exports.",
   "license": "Apache-2.0",
   "author": "iDEVconn",
@@ -68,9 +68,15 @@
     "openai": ">=5.0.0"
   },
   "peerDependenciesMeta": {
-    "@anthropic-ai/sdk": { "optional": true },
-    "@google/generative-ai": { "optional": true },
-    "openai": { "optional": true }
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@google/generative-ai": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
