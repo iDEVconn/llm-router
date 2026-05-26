@@ -1,0 +1,70 @@
+name: Release
+
+# Runs on every push to main. The `changesets/action@v1` step decides what
+# to do based on the contents of `.changeset/`:
+#
+#   * If any pending `.md` files exist, it opens / refreshes a "Version
+#     Packages" PR that, when merged, bumps package.json + CHANGELOG.md.
+#   * If the latest push IS that release PR being merged (no pending
+#     changesets left), it runs `npm publish` for any package whose new
+#     version isn't already on the registry.
+#
+# Hardened to match the iDEVconn/isubscribe-entitlements pattern:
+#   * Concurrency group prevents two releases racing.
+#   * Deprecated npm config cleared so `npm publish` doesn't trip on a
+#     legacy `always-auth` setting baked into the runner image.
+#   * `npm install -g npm@latest` ensures we have OIDC trusted-publishing
+#     support (npm >= 9.5) regardless of the action's Node bundle.
+#   * `NPM_CONFIG_PROVENANCE=true` emits an npm provenance attestation
+#     for every published version (requires `id-token: write`).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Clean deprecated npm config
+        run: |
+          npm config delete always-auth --location=user 2>/dev/null || true
+          npm config delete always-auth --location=project 2>/dev/null || true
+          rm -f .npmrc
+
+      - name: Ensure npm has OIDC trusted publishing support
+        run: npm install -g npm@latest
+
+      - name: Create Release PR or publish
+        uses: changesets/action@v1
+        with:
+          publish: npx changeset publish
+          version: npx changeset version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"

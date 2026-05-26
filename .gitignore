@@ -1,0 +1,15 @@
+node_modules
+dist
+coverage
+.turbo
+.nx
+.DS_Store
+*.tsbuildinfo
+
+# editor
+.vscode
+.idea
+
+# env
+.env
+.env.local

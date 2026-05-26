@@ -1,0 +1,90 @@
+{
+  "name": "@idevconn/llm-router",
+  "version": "0.1.0",
+  "description": "Library-agnostic LLM router: provider-neutral strategy interface + registry with env-driven platform selection and BYOK support. Opt-in adapters for Gemini, Claude, and Grok via subpath exports.",
+  "license": "Apache-2.0",
+  "author": "iDEVconn",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iDEVconn/llm-router.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iDEVconn/llm-router/issues"
+  },
+  "homepage": "https://github.com/iDEVconn/llm-router#readme",
+  "keywords": [
+    "llm",
+    "ai",
+    "router",
+    "gemini",
+    "claude",
+    "grok",
+    "byok",
+    "strategy"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./gemini": {
+      "types": "./dist/gemini.d.ts",
+      "import": "./dist/gemini.js",
+      "require": "./dist/gemini.cjs"
+    },
+    "./claude": {
+      "types": "./dist/claude.d.ts",
+      "import": "./dist/claude.js",
+      "require": "./dist/claude.cjs"
+    },
+    "./grok": {
+      "types": "./dist/grok.d.ts",
+      "import": "./dist/grok.js",
+      "require": "./dist/grok.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.40.0",
+    "@google/generative-ai": ">=0.20.0",
+    "openai": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": { "optional": true },
+    "@google/generative-ai": { "optional": true },
+    "openai": { "optional": true }
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.96.0",
+    "@changesets/cli": "^2.31.0",
+    "@google/generative-ai": "^0.24.1",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "openai": "^6.38.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.7"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
