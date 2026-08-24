@@ -74,7 +74,12 @@ jobs:
       # it never pushes them (confirmed by inspecting a run's logs: no `git
       # push` appears anywhere after "Created git tags."). Without this step
       # every published version is on npm with no corresponding GitHub tag
-      # or Release, exactly what happened for v0.5.0.
-      - name: Push tags created by changeset publish
-        if: steps.changesets.outputs.published == 'true'
+      # or Release — exactly what happened for v0.5.0, and AGAIN for v0.6.0
+      # even after the first fix attempt: `steps.changesets.outputs.published`
+      # came back falsy despite a real publish succeeding (changesets/action@v1
+      # apparently can't parse @changesets/cli v3's publish output the way it
+      # parsed v2's — the bump to CLI v3 landed in the same release window).
+      # Run this unconditionally instead of trusting that output: `git push
+      # --tags` is a safe no-op when there's nothing new to push.
+      - name: Push any git tags created by changeset publish
         run: git push origin --tags
