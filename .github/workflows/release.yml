@@ -61,6 +61,7 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Create Release PR or publish
+        id: changesets
         uses: changesets/action@v1
         with:
           publish: npx changeset publish
@@ -68,3 +69,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
+
+      # `changeset publish` only creates git tags locally in this checkout —
+      # it never pushes them (confirmed by inspecting a run's logs: no `git
+      # push` appears anywhere after "Created git tags."). Without this step
+      # every published version is on npm with no corresponding GitHub tag
+      # or Release, exactly what happened for v0.5.0.
+      - name: Push tags created by changeset publish
+        if: steps.changesets.outputs.published == 'true'
+        run: git push origin --tags
