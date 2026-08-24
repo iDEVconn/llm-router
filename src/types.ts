@@ -41,6 +41,15 @@ export interface LlmResponse {
   /** The model the provider actually used (may differ from the request hint). */
   model: string;
   usage: LlmUsage;
+  /**
+   * True when the provider stopped generating because it hit the output
+   * token limit, not because it finished naturally — `text` is very
+   * likely incomplete (e.g. truncated JSON that will fail to parse).
+   * Each strategy reads its own provider's exact signal for this
+   * (Anthropic `stop_reason`, Gemini `finishReason`, OpenAI/xAI
+   * `finish_reason`) rather than guessing from token counts.
+   */
+  truncated: boolean;
 }
 
 /**

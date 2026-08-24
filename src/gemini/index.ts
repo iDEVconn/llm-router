@@ -85,6 +85,10 @@ export class GeminiStrategy implements LlmStrategy {
       (result.response as { usageMetadata?: GeminiUsageMetadata }).usageMetadata ??
       (result as unknown as { usageMetadata?: GeminiUsageMetadata }).usageMetadata;
 
+    const finishReason = (
+      result.response as { candidates?: Array<{ finishReason?: string }> }
+    ).candidates?.[0]?.finishReason;
+
     return {
       text: result.response.text(),
       model: modelName,
@@ -92,6 +96,7 @@ export class GeminiStrategy implements LlmStrategy {
         inputTokens: usage?.promptTokenCount ?? 0,
         outputTokens: usage?.candidatesTokenCount ?? 0,
       },
+      truncated: finishReason === "MAX_TOKENS",
     };
   }
 

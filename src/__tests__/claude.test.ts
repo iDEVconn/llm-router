@@ -59,6 +59,34 @@ describe("ClaudeStrategy", () => {
     expect(content[0].source.media_type).toBe("application/pdf");
   });
 
+  it("reports truncated=true when stop_reason is max_tokens", async () => {
+    mockMessagesCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: "cut off" }],
+      model: "claude-haiku-4-5",
+      stop_reason: "max_tokens",
+      usage: { input_tokens: 4, output_tokens: 4096 },
+    });
+    const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+    const result = await strategy.generate({ prompt: "p" });
+
+    expect(result.truncated).toBe(true);
+  });
+
+  it("reports truncated=false for a normal end_turn completion", async () => {
+    mockMessagesCreate.mockResolvedValueOnce({
+      content: [{ type: "text", text: "done" }],
+      model: "claude-haiku-4-5",
+      stop_reason: "end_turn",
+      usage: { input_tokens: 4, output_tokens: 6 },
+    });
+    const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+    const result = await strategy.generate({ prompt: "p" });
+
+    expect(result.truncated).toBe(false);
+  });
+
   it("concatenates text blocks from the response", async () => {
     mockMessagesCreate.mockResolvedValueOnce({
       content: [

@@ -47,6 +47,43 @@ describe("GeminiStrategy", () => {
     expect(parts[1].inlineData.data).toBe(Buffer.from("hello").toString("base64"));
   });
 
+  it("reports truncated=true when the candidate's finishReason is MAX_TOKENS", async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      response: {
+        text: () => "cut off",
+        candidates: [{ finishReason: "MAX_TOKENS" }],
+      },
+    });
+    const strategy = new GeminiStrategy({ apiKey: "k" });
+
+    const result = await strategy.generate({ prompt: "x" });
+
+    expect(result.truncated).toBe(true);
+  });
+
+  it("reports truncated=false for a normal STOP finishReason", async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      response: {
+        text: () => "done",
+        candidates: [{ finishReason: "STOP" }],
+      },
+    });
+    const strategy = new GeminiStrategy({ apiKey: "k" });
+
+    const result = await strategy.generate({ prompt: "x" });
+
+    expect(result.truncated).toBe(false);
+  });
+
+  it("reports truncated=false when no candidates are present", async () => {
+    mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "" } });
+    const strategy = new GeminiStrategy({ apiKey: "k" });
+
+    const result = await strategy.generate({ prompt: "x" });
+
+    expect(result.truncated).toBe(false);
+  });
+
   it("passes systemPrompt as systemInstruction when provided", async () => {
     mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "" } });
     const strategy = new GeminiStrategy({ apiKey: "k" });

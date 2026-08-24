@@ -120,6 +120,7 @@ export class GrokStrategy implements LlmStrategy {
         inputTokens: response.usage?.prompt_tokens ?? 0,
         outputTokens: response.usage?.completion_tokens ?? 0,
       },
+      truncated: response.choices[0]?.finish_reason === "length",
     };
   }
 

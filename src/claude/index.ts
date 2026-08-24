@@ -128,6 +128,7 @@ export class ClaudeStrategy implements LlmStrategy {
         inputTokens: response.usage.input_tokens ?? 0,
         outputTokens: response.usage.output_tokens ?? 0,
       },
+      truncated: response.stop_reason === "max_tokens",
     };
   }
 
