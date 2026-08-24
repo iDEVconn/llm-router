@@ -47,6 +47,30 @@ describe("GeminiStrategy", () => {
     expect(parts[1].inlineData.data).toBe(Buffer.from("hello").toString("base64"));
   });
 
+  it("passes systemPrompt as systemInstruction when provided", async () => {
+    mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "" } });
+    const strategy = new GeminiStrategy({ apiKey: "k" });
+
+    await strategy.generate({ prompt: "x", systemPrompt: "Be concise." });
+
+    expect(mockGetGenerativeModel).toHaveBeenCalledWith({
+      model: "gemini-2.5-flash-lite",
+      systemInstruction: "Be concise.",
+    });
+    // systemPrompt must not also leak into the prompt parts.
+    const parts = mockGenerateContent.mock.calls[0]![0];
+    expect(parts).toEqual([{ text: "x" }]);
+  });
+
+  it("omits systemInstruction entirely when systemPrompt is not provided", async () => {
+    mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "" } });
+    const strategy = new GeminiStrategy({ apiKey: "k" });
+
+    await strategy.generate({ prompt: "x" });
+
+    expect(mockGetGenerativeModel).toHaveBeenCalledWith({ model: "gemini-2.5-flash-lite" });
+  });
+
   it("uses the per-call apiKey instead of the platform key when given", async () => {
     mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "" } });
     const strategy = new GeminiStrategy({ apiKey: "platform-key" });

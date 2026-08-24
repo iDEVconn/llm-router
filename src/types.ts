@@ -11,6 +11,16 @@ export interface LlmAttachment {
 /** Per-call options. */
 export interface LlmGenerateOptions {
   prompt: string;
+  /**
+   * Stable instructions shared across many calls (e.g. a system/role
+   * prompt). Kept separate from `prompt` so strategies that support
+   * prompt caching (currently Claude, via `cache_control`) can cache it
+   * independently of the per-call dynamic content, cutting the cost of
+   * repeated calls that reuse the same instructions. Strategies without
+   * caching support still use it correctly (as a system-role message or
+   * `systemInstruction`) — they just don't get the cost benefit.
+   */
+  systemPrompt?: string;
   attachments?: LlmAttachment[];
   /** Override the strategy's `defaultModel`. Blank/whitespace = use default. */
   model?: string;

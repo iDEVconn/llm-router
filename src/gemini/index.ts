@@ -58,7 +58,15 @@ export class GeminiStrategy implements LlmStrategy {
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
     const client = opts.apiKey ? new GoogleGenerativeAI(opts.apiKey) : this.getPlatformClient();
     const modelName = opts.model?.trim() || this.defaultModel;
-    const model = client.getGenerativeModel({ model: modelName });
+    // `systemInstruction` correctly separates stable instructions from the
+    // per-call prompt — note this is NOT Gemini's Cached Content API (which
+    // needs a separate create/lifecycle/TTL flow and a much higher minimum
+    // token count than most system prompts reach), so it doesn't reduce
+    // cost, only keeps the request shape correct.
+    const model = client.getGenerativeModel({
+      model: modelName,
+      ...(opts.systemPrompt ? { systemInstruction: opts.systemPrompt } : {}),
+    });
 
     const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
       { text: opts.prompt },

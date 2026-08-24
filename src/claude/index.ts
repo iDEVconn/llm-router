@@ -93,6 +93,22 @@ export class ClaudeStrategy implements LlmStrategy {
     const response = await client.messages.create({
       model: modelName,
       max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      // `cache_control: ephemeral` on the system block lets Anthropic cache
+      // it server-side, so repeated calls that reuse the same systemPrompt
+      // (the common case — a report-generation instruction set called many
+      // times) are billed at the much cheaper cache-read rate instead of
+      // full input-token price on every call.
+      ...(opts.systemPrompt
+        ? {
+            system: [
+              {
+                type: "text" as const,
+                text: opts.systemPrompt,
+                cache_control: { type: "ephemeral" as const },
+              },
+            ],
+          }
+        : {}),
       // Anthropic's SDK types accept the broader union; cast here so the
       // pkg compiles without pulling in the entire Anthropic.Messages
       // type surface as a public dep.
