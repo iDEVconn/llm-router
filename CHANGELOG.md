@@ -1,5 +1,19 @@
 # @idevconn/llm-router
 
+## 0.6.0
+
+### Minor Changes
+
+- 622498f: Add `truncated` to `LlmResponse`, reporting whether the provider stopped generating because it hit the output-token limit rather than finishing naturally — `text` is very likely incomplete when this is `true` (e.g. truncated JSON that will fail to parse).
+  
+  Each strategy reads its own provider's exact signal rather than guessing from token counts:
+  
+  - **Claude**: `response.stop_reason === "max_tokens"`
+  - **Gemini**: `response.candidates[0].finishReason === "MAX_TOKENS"`
+  - **Grok**: `response.choices[0].finish_reason === "length"`
+  
+  Callers that previously had to inspect a provider-specific field (e.g. Anthropic's `stop_reason`) to detect truncation can now check `result.truncated` uniformly across all three providers.
+
 ## 0.5.0
 
 ### Minor Changes
