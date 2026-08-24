@@ -58,6 +58,37 @@ describe("GrokStrategy", () => {
     ).rejects.toBeInstanceOf(UnsupportedAttachmentError);
   });
 
+  it("sends systemPrompt as a leading system message when provided", async () => {
+    mockChatCompletionsCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "ok" } }],
+      model: "grok-4.3",
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    });
+    const strategy = new GrokStrategy({ apiKey: "k" });
+
+    await strategy.generate({ prompt: "p", systemPrompt: "Be concise." });
+
+    const call = mockChatCompletionsCreate.mock.calls[0]![0];
+    expect(call.messages[0]).toEqual({ role: "system", content: "Be concise." });
+    expect(call.messages[1].role).toBe("user");
+    expect(call.messages[1].content).toEqual([{ type: "text", text: "p" }]);
+  });
+
+  it("omits the system message entirely when systemPrompt is not provided", async () => {
+    mockChatCompletionsCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "" } }],
+      model: "grok-4.3",
+      usage: { prompt_tokens: 0, completion_tokens: 0 },
+    });
+    const strategy = new GrokStrategy({ apiKey: "k" });
+
+    await strategy.generate({ prompt: "p" });
+
+    const call = mockChatCompletionsCreate.mock.calls[0]![0];
+    expect(call.messages).toHaveLength(1);
+    expect(call.messages[0].role).toBe("user");
+  });
+
   it("defaults string content to empty when SDK returns null", async () => {
     mockChatCompletionsCreate.mockResolvedValueOnce({
       choices: [{ message: { content: null } }],

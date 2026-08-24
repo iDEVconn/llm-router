@@ -78,6 +78,41 @@ describe("ClaudeStrategy", () => {
     expect(result.usage).toEqual({ inputTokens: 4, outputTokens: 6 });
   });
 
+  it("sends systemPrompt as a cached system block when provided", async () => {
+    mockMessagesCreate.mockResolvedValueOnce({
+      content: [],
+      model: "claude-haiku-4-5",
+      usage: { input_tokens: 0, output_tokens: 0 },
+    });
+    const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+    await strategy.generate({ prompt: "p", systemPrompt: "You are a helpful assistant." });
+
+    const call = mockMessagesCreate.mock.calls[0]![0];
+    expect(call.system).toEqual([
+      {
+        type: "text",
+        text: "You are a helpful assistant.",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+    // systemPrompt must not also leak into the user message content.
+    expect(call.messages[0].content).toEqual([{ type: "text", text: "p" }]);
+  });
+
+  it("omits the system param entirely when systemPrompt is not provided", async () => {
+    mockMessagesCreate.mockResolvedValueOnce({
+      content: [],
+      model: "claude-haiku-4-5",
+      usage: { input_tokens: 0, output_tokens: 0 },
+    });
+    const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+    await strategy.generate({ prompt: "p" });
+
+    expect(mockMessagesCreate.mock.calls[0]![0].system).toBeUndefined();
+  });
+
   it("honors maxTokens override", async () => {
     mockMessagesCreate.mockResolvedValueOnce({
       content: [],

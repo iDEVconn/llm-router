@@ -89,11 +89,24 @@ export class GrokStrategy implements LlmStrategy {
     }
     messageContent.push({ type: "text", text: opts.prompt });
 
+    // A leading system-role message is the correct OpenAI-wire-format shape
+    // for stable instructions. It also positions the request to benefit
+    // from any automatic prefix-based caching xAI's backend may apply
+    // (OpenAI-compatible APIs commonly cache repeated prompt prefixes
+    // transparently) — no explicit cache API is documented for xAI, so
+    // this is a structural best-effort, not a guaranteed cost saving.
+    const messages = opts.systemPrompt
+      ? [
+          { role: "system" as const, content: opts.systemPrompt },
+          { role: "user" as const, content: messageContent },
+        ]
+      : [{ role: "user" as const, content: messageContent }];
+
     const response = await client.chat.completions.create({
       model: modelName,
       // Cast through unknown to avoid a hard dep on OpenAI's deep message types.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      messages: [{ role: "user", content: messageContent as any }],
+      messages: messages as any,
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
     });
 
