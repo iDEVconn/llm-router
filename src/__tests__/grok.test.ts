@@ -58,6 +58,32 @@ describe("GrokStrategy", () => {
     ).rejects.toBeInstanceOf(UnsupportedAttachmentError);
   });
 
+  it("reports truncated=true when finish_reason is length", async () => {
+    mockChatCompletionsCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "cut off" }, finish_reason: "length" }],
+      model: "grok-4.3",
+      usage: { prompt_tokens: 4, completion_tokens: 4096 },
+    });
+    const strategy = new GrokStrategy({ apiKey: "k" });
+
+    const result = await strategy.generate({ prompt: "p" });
+
+    expect(result.truncated).toBe(true);
+  });
+
+  it("reports truncated=false for a normal stop finish_reason", async () => {
+    mockChatCompletionsCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "done" }, finish_reason: "stop" }],
+      model: "grok-4.3",
+      usage: { prompt_tokens: 4, completion_tokens: 6 },
+    });
+    const strategy = new GrokStrategy({ apiKey: "k" });
+
+    const result = await strategy.generate({ prompt: "p" });
+
+    expect(result.truncated).toBe(false);
+  });
+
   it("sends systemPrompt as a leading system message when provided", async () => {
     mockChatCompletionsCreate.mockResolvedValueOnce({
       choices: [{ message: { content: "ok" } }],
