@@ -13,3 +13,7 @@ coverage
 # env
 .env
 .env.local
+
+# local agent-tooling state (not part of this package)
+.claude-flow
+ruvector.db
