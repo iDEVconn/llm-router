@@ -1,6 +1,6 @@
 # @idevconn/llm-router
 
-Library-agnostic LLM router. Provider-neutral `LlmStrategy` interface + `LlmRegistry` with env-driven platform selection, BYOK support, and boot-time env-key audit. Opt-in adapters for Gemini, Claude, and Grok via subpath exports — install only the SDKs you actually use.
+Library-agnostic LLM router. Provider-neutral `LlmStrategy` interface + `LlmRegistry` with env-driven platform selection, BYOK support, and boot-time env-key audit. Opt-in adapters for Gemini, Claude, Grok, ChatGPT, and DeepSeek via subpath exports — install only the SDKs you actually use. A `TaskRouter` + `Orchestrator` on top can split a free-text task into subtasks and run each on whichever registered provider fits best.
 
 ## Features
 
@@ -18,7 +18,7 @@ npm install @idevconn/llm-router
 # Then install only the SDKs for the providers you use:
 npm install @google/generative-ai   # for Gemini
 npm install @anthropic-ai/sdk       # for Claude
-npm install openai                  # for Grok (xAI is OpenAI-compatible)
+npm install openai                  # for Grok, ChatGPT, and DeepSeek (all OpenAI-compatible)
 ```
 
 ## Quick start
@@ -79,6 +79,45 @@ class OllamaStrategy implements LlmStrategy {
   async validateKey(apiKey, model) { /* ping endpoint */ }
 }
 ```
+
+## Task orchestration
+
+`Orchestrator` splits a free-text task into subtasks and runs each on
+whichever registered provider is best suited, using only providers that
+have a usable key (platform or BYOK for this call):
+
+```ts
+import { LlmRegistry, Orchestrator } from "@idevconn/llm-router";
+import { ClaudeStrategy } from "@idevconn/llm-router/claude";
+import { GeminiStrategy } from "@idevconn/llm-router/gemini";
+
+const registry = new LlmRegistry({
+  strategies: [
+    new ClaudeStrategy({ apiKey: process.env.CLAUDE_API_KEY }),
+    new GeminiStrategy({ apiKey: process.env.GEMINI_API_KEY }),
+  ],
+  platform: "claude",
+});
+
+const orchestrator = new Orchestrator({ registry });
+const result = await orchestrator.run(
+  "Summarize this contract and flag any unusual liability clauses.",
+  { synthesize: true },
+);
+
+for (const subtask of result.subtasks) {
+  console.log(subtask.subtask.description, "->", subtask.decision?.provider, subtask.result);
+}
+console.log(result.final);
+```
+
+Routing is capability-tag matching first (`TaskRouter`'s rule stage),
+falling back to a one-shot LLM classifier call when tags don't decide it.
+Each subtask runs through a bounded critique/retry loop (`maxRounds`,
+default 1) before being flagged `unresolved: true` in its result. One
+subtask's failure never aborts the run — see
+`docs/superpowers/specs/2026-08-25-task-orchestrator-design.md` for the
+full design.
 
 ## Error mapping
 
