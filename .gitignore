@@ -20,5 +20,8 @@ ruvector.db
 .claude/worktrees
 .claude/.proven-config-version
 .claude/proven-config.json
+.claude/settings.local.json
 
 .swarm/
+agentdb.rvf
+agentdb.rvf.lock
