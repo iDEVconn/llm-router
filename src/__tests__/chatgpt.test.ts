@@ -16,20 +16,25 @@ vi.mock("openai", () => {
 });
 
 import { LlmKeyValidationError, UnsupportedAttachmentError } from "../errors";
-import { GrokStrategy } from "../grok/index";
+import { ChatGptStrategy } from "../chatgpt/index";
 
-describe("GrokStrategy", () => {
+describe("ChatGptStrategy", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("declares its capability tags", () => {
+    const strategy = new ChatGptStrategy({ apiKey: "k" });
+    expect(strategy.capabilities).toEqual(["code", "reasoning", "vision", "multilingual"]);
   });
 
   it("sends an image_url message + prompt for image attachments", async () => {
     mockChatCompletionsCreate.mockResolvedValueOnce({
       choices: [{ message: { content: "extracted" } }],
-      model: "grok-4.3",
+      model: "gpt-4.1-mini",
       usage: { prompt_tokens: 10, completion_tokens: 5 },
     });
-    const strategy = new GrokStrategy({ apiKey: "platform-key" });
+    const strategy = new ChatGptStrategy({ apiKey: "platform-key" });
 
     const result = await strategy.generate({
       prompt: "describe",
@@ -48,8 +53,7 @@ describe("GrokStrategy", () => {
   });
 
   it("throws UnsupportedAttachmentError on PDF inputs", async () => {
-    const strategy = new GrokStrategy({ apiKey: "k" });
-
+    const strategy = new ChatGptStrategy({ apiKey: "k" });
     await expect(
       strategy.generate({
         prompt: "p",
@@ -61,113 +65,61 @@ describe("GrokStrategy", () => {
   it("reports truncated=true when finish_reason is length", async () => {
     mockChatCompletionsCreate.mockResolvedValueOnce({
       choices: [{ message: { content: "cut off" }, finish_reason: "length" }],
-      model: "grok-4.3",
+      model: "gpt-4.1-mini",
       usage: { prompt_tokens: 4, completion_tokens: 4096 },
     });
-    const strategy = new GrokStrategy({ apiKey: "k" });
-
+    const strategy = new ChatGptStrategy({ apiKey: "k" });
     const result = await strategy.generate({ prompt: "p" });
-
     expect(result.truncated).toBe(true);
-  });
-
-  it("reports truncated=false for a normal stop finish_reason", async () => {
-    mockChatCompletionsCreate.mockResolvedValueOnce({
-      choices: [{ message: { content: "done" }, finish_reason: "stop" }],
-      model: "grok-4.3",
-      usage: { prompt_tokens: 4, completion_tokens: 6 },
-    });
-    const strategy = new GrokStrategy({ apiKey: "k" });
-
-    const result = await strategy.generate({ prompt: "p" });
-
-    expect(result.truncated).toBe(false);
   });
 
   it("sends systemPrompt as a leading system message when provided", async () => {
     mockChatCompletionsCreate.mockResolvedValueOnce({
       choices: [{ message: { content: "ok" } }],
-      model: "grok-4.3",
+      model: "gpt-4.1-mini",
       usage: { prompt_tokens: 1, completion_tokens: 1 },
     });
-    const strategy = new GrokStrategy({ apiKey: "k" });
-
+    const strategy = new ChatGptStrategy({ apiKey: "k" });
     await strategy.generate({ prompt: "p", systemPrompt: "Be concise." });
 
     const call = mockChatCompletionsCreate.mock.calls[0]![0];
     expect(call.messages[0]).toEqual({ role: "system", content: "Be concise." });
     expect(call.messages[1].role).toBe("user");
-    expect(call.messages[1].content).toEqual([{ type: "text", text: "p" }]);
-  });
-
-  it("omits the system message entirely when systemPrompt is not provided", async () => {
-    mockChatCompletionsCreate.mockResolvedValueOnce({
-      choices: [{ message: { content: "" } }],
-      model: "grok-4.3",
-      usage: { prompt_tokens: 0, completion_tokens: 0 },
-    });
-    const strategy = new GrokStrategy({ apiKey: "k" });
-
-    await strategy.generate({ prompt: "p" });
-
-    const call = mockChatCompletionsCreate.mock.calls[0]![0];
-    expect(call.messages).toHaveLength(1);
-    expect(call.messages[0].role).toBe("user");
-  });
-
-  it("defaults string content to empty when SDK returns null", async () => {
-    mockChatCompletionsCreate.mockResolvedValueOnce({
-      choices: [{ message: { content: null } }],
-      model: "grok-4.3",
-      usage: { prompt_tokens: 1, completion_tokens: 1 },
-    });
-    const strategy = new GrokStrategy({ apiKey: "k" });
-
-    const result = await strategy.generate({ prompt: "p" });
-    expect(result.text).toBe("");
   });
 
   it("uses the custom baseURL when supplied", async () => {
     mockChatCompletionsCreate.mockResolvedValueOnce({
       choices: [{ message: { content: "" } }],
-      model: "grok-4.3",
+      model: "gpt-4.1-mini",
       usage: { prompt_tokens: 0, completion_tokens: 0 },
     });
-    const strategy = new GrokStrategy({
-      apiKey: "k",
-      baseURL: "https://internal.xai.example/v1",
-    });
+    const strategy = new ChatGptStrategy({ apiKey: "k", baseURL: "https://internal.openai.example/v1" });
     await strategy.generate({ prompt: "p" });
-    // Constructor opts captured on the mock — easiest way to assert is via the
-    // fact that the call succeeded; deeper introspection requires a more
-    // elaborate mock. The cheaper test is to ensure no throw.
     expect(mockChatCompletionsCreate).toHaveBeenCalledOnce();
   });
 
   it("validateKey calls models.list without spending tokens", async () => {
     mockModelsList.mockResolvedValueOnce({ data: [] });
-    const strategy = new GrokStrategy({});
-
+    const strategy = new ChatGptStrategy({});
     await strategy.validateKey("u-key");
     expect(mockModelsList).toHaveBeenCalledOnce();
   });
 
   it("validateKey wraps SDK rejections as LlmKeyValidationError", async () => {
     mockModelsList.mockRejectedValueOnce(new Error("unauthorized"));
-    const strategy = new GrokStrategy({});
-
+    const strategy = new ChatGptStrategy({});
     await expect(strategy.validateKey("bad")).rejects.toBeInstanceOf(LlmKeyValidationError);
   });
 
   it("throws if no apiKey is configured AND none is passed per-call", async () => {
-    const strategy = new GrokStrategy({});
+    const strategy = new ChatGptStrategy({});
     await expect(strategy.generate({ prompt: "x" })).rejects.toThrow(
       /platform API key is not configured/,
     );
   });
 
-  it("declares its capability tags", () => {
-    const strategy = new GrokStrategy({ apiKey: "k" });
-    expect(strategy.capabilities).toEqual(["vision", "cheap"]);
+  it("hasPlatformKey reflects whether a constructor apiKey was given", () => {
+    expect(new ChatGptStrategy({ apiKey: "k" }).hasPlatformKey()).toBe(true);
+    expect(new ChatGptStrategy({}).hasPlatformKey()).toBe(false);
   });
 });

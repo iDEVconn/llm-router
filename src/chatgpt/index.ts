@@ -2,8 +2,8 @@ import OpenAI from "openai";
 import { LlmKeyValidationError, UnsupportedAttachmentError } from "../errors";
 import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
 
-const DEFAULT_BASE_URL = "https://api.x.ai/v1";
-const FALLBACK_DEFAULT_MODEL = "grok-4.3";
+const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const FALLBACK_DEFAULT_MODEL = "gpt-4.1-mini";
 
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -12,10 +12,10 @@ const SUPPORTED_IMAGE_TYPES = new Set([
   "image/webp",
 ]);
 
-export interface GrokStrategyOptions {
+export interface ChatGptStrategyOptions {
   apiKey?: string;
   defaultModel?: string;
-  /** Override the xAI API base URL. Default `https://api.x.ai/v1`. */
+  /** Override the OpenAI API base URL. Default `https://api.openai.com/v1`. */
   baseURL?: string;
 }
 
@@ -25,21 +25,20 @@ function toBase64(data: string | Buffer): string {
 }
 
 /**
- * xAI Grok adapter. xAI's REST API is OpenAI-compatible, so this reuses
- * the `openai` SDK with `baseURL` pointed at xAI. Grok's vision endpoint
- * does NOT accept PDF — callers must convert PDFs client-side. Hitting
- * the adapter with a non-image MIME yields `UnsupportedAttachmentError`
- * up front rather than an opaque 4xx mid-stream.
+ * OpenAI ChatGPT adapter. Chat Completions' vision input only accepts
+ * images, not PDFs — callers must convert PDFs client-side. Hitting the
+ * adapter with a non-image MIME yields `UnsupportedAttachmentError` up
+ * front rather than an opaque 4xx mid-stream.
  */
-export class GrokStrategy implements LlmStrategy {
-  readonly providerName = "grok";
-  readonly capabilities = ["vision", "cheap"] as const;
+export class ChatGptStrategy implements LlmStrategy {
+  readonly providerName = "chatgpt";
+  readonly capabilities = ["code", "reasoning", "vision", "multilingual"] as const;
   readonly defaultModel: string;
   private platformClient: OpenAI | null = null;
   private readonly platformApiKey: string | undefined;
   private readonly baseURL: string;
 
-  constructor(opts: GrokStrategyOptions = {}) {
+  constructor(opts: ChatGptStrategyOptions = {}) {
     this.platformApiKey = opts.apiKey?.trim() || undefined;
     this.defaultModel = opts.defaultModel?.trim() || FALLBACK_DEFAULT_MODEL;
     this.baseURL = opts.baseURL?.trim() || DEFAULT_BASE_URL;
@@ -49,13 +48,10 @@ export class GrokStrategy implements LlmStrategy {
     if (!this.platformClient) {
       if (!this.platformApiKey) {
         throw new Error(
-          "Grok platform API key is not configured. Pass `apiKey` per call (BYOK) or supply one to the strategy constructor.",
+          "ChatGPT platform API key is not configured. Pass `apiKey` per call (BYOK) or supply one to the strategy constructor.",
         );
       }
-      this.platformClient = new OpenAI({
-        apiKey: this.platformApiKey,
-        baseURL: this.baseURL,
-      });
+      this.platformClient = new OpenAI({ apiKey: this.platformApiKey, baseURL: this.baseURL });
     }
     return this.platformClient;
   }
@@ -66,7 +62,7 @@ export class GrokStrategy implements LlmStrategy {
         throw new UnsupportedAttachmentError(
           this.providerName,
           attachment.mimetype,
-          "Grok vision only accepts image inputs. Convert the file to PNG or JPEG, or switch to a provider with PDF support.",
+          "OpenAI Chat Completions vision only accepts image inputs. Convert the file to PNG or JPEG, or switch to a provider with PDF support.",
         );
       }
     }
@@ -90,12 +86,6 @@ export class GrokStrategy implements LlmStrategy {
     }
     messageContent.push({ type: "text", text: opts.prompt });
 
-    // A leading system-role message is the correct OpenAI-wire-format shape
-    // for stable instructions. It also positions the request to benefit
-    // from any automatic prefix-based caching xAI's backend may apply
-    // (OpenAI-compatible APIs commonly cache repeated prompt prefixes
-    // transparently) — no explicit cache API is documented for xAI, so
-    // this is a structural best-effort, not a guaranteed cost saving.
     const messages = opts.systemPrompt
       ? [
           { role: "system" as const, content: opts.systemPrompt },
@@ -105,7 +95,6 @@ export class GrokStrategy implements LlmStrategy {
 
     const response = await client.chat.completions.create({
       model: modelName,
-      // Cast through unknown to avoid a hard dep on OpenAI's deep message types.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       messages: messages as any,
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
@@ -126,11 +115,9 @@ export class GrokStrategy implements LlmStrategy {
   }
 
   /**
-   * Cheapest auth-checked call against xAI. `models.list` is free and
-   * provider-wide, which is exactly what's needed for key validation —
-   * no token spend, no quota impact. The `model` parameter is accepted
-   * to satisfy `LlmStrategy.validateKey` but ignored, because xAI has no
-   * per-model auth gate beyond what `models.list` already verifies.
+   * Cheapest auth-checked call against OpenAI. `models.list` is free and
+   * account-wide — no token spend. `model` is accepted to satisfy
+   * `LlmStrategy.validateKey` but ignored, same as the Grok adapter.
    */
   async validateKey(apiKey: string, _model?: string): Promise<void> {
     const client = new OpenAI({ apiKey, baseURL: this.baseURL });

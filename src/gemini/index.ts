@@ -34,6 +34,7 @@ function toBase64(data: string | Buffer): string {
  */
 export class GeminiStrategy implements LlmStrategy {
   readonly providerName = "gemini";
+  readonly capabilities = ["vision", "long-context", "multilingual", "cheap"] as const;
   readonly defaultModel: string;
   private platformClient: GoogleGenerativeAI | null = null;
   private readonly platformApiKey: string | undefined;

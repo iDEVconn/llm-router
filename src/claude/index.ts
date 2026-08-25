@@ -33,6 +33,7 @@ function toBase64(data: string | Buffer): string {
  */
 export class ClaudeStrategy implements LlmStrategy {
   readonly providerName = "claude";
+  readonly capabilities = ["code", "reasoning", "long-context"] as const;
   readonly defaultModel: string;
   private platformClient: Anthropic | null = null;
   private readonly platformApiKey: string | undefined;
