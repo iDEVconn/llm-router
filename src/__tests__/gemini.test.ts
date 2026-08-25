@@ -186,4 +186,9 @@ describe("GeminiStrategy", () => {
       expect(mockGetGenerativeModel).toHaveBeenCalledWith({ model: "gemini-pro" });
     });
   });
+
+  it("declares its capability tags", () => {
+    const strategy = new GeminiStrategy({ apiKey: "k" });
+    expect(strategy.capabilities).toEqual(["vision", "long-context", "multilingual", "cheap"]);
+  });
 });

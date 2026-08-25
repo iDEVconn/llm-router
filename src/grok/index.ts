@@ -33,6 +33,7 @@ function toBase64(data: string | Buffer): string {
  */
 export class GrokStrategy implements LlmStrategy {
   readonly providerName = "grok";
+  readonly capabilities = ["vision", "cheap"] as const;
   readonly defaultModel: string;
   private platformClient: OpenAI | null = null;
   private readonly platformApiKey: string | undefined;

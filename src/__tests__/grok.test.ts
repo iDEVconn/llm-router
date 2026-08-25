@@ -165,4 +165,9 @@ describe("GrokStrategy", () => {
       /platform API key is not configured/,
     );
   });
+
+  it("declares its capability tags", () => {
+    const strategy = new GrokStrategy({ apiKey: "k" });
+    expect(strategy.capabilities).toEqual(["vision", "cheap"]);
+  });
 });
