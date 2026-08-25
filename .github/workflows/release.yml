@@ -83,3 +83,18 @@ jobs:
       # --tags` is a safe no-op when there's nothing new to push.
       - name: Push any git tags created by changeset publish
         run: git push origin --tags
+
+      # Neither `changesets/action@v1` nor `changeset publish` ever creates a
+      # GitHub Release — only a local git tag (pushed above). Without this,
+      # every version ships to npm with a tag but no Release page (happened
+      # for v0.5.0, v0.6.0, and v0.7.0 before this step existed). Idempotent:
+      # `gh release view` exits non-zero only when the release is missing, so
+      # a rerun with nothing new to publish is a safe no-op.
+      - name: Create a GitHub Release for the tag on this commit, if missing
+        run: |
+          TAG=$(git describe --tags --abbrev=0 --exact-match 2>/dev/null || true)
+          if [ -n "$TAG" ] && ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

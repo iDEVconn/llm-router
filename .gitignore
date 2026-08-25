@@ -17,3 +17,8 @@ coverage
 # local agent-tooling state (not part of this package)
 .claude-flow
 ruvector.db
+.claude/worktrees
+.claude/.proven-config-version
+.claude/proven-config.json
+
+.swarm/
