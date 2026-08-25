@@ -72,6 +72,22 @@ export interface LlmStrategy {
    * access to a specific model; falls back to `defaultModel` when omitted.
    */
   validateKey(apiKey: string, model?: string): Promise<void>;
+
+  /**
+   * True when this strategy has a usable platform-level key configured
+   * (constructor-supplied, not per-call BYOK). Optional for backward
+   * compatibility — a strategy that omits this is treated by TaskRouter
+   * as "unavailable," never assumed usable.
+   */
+  hasPlatformKey?(): boolean;
+
+  /**
+   * Free-text capability tags used by TaskRouter's rule-matching stage
+   * (see `KNOWN_CAPABILITY_TAGS` in `task-router.ts`). Optional; a
+   * strategy without tags never wins the rule stage and routes through
+   * the LLM-fallback stage instead.
+   */
+  readonly capabilities?: readonly string[];
 }
 
 /** Curated metadata for a single model. Renderable in BYOK UI dropdowns. */
