@@ -357,3 +357,66 @@ describe("Orchestrator.run — concurrency", () => {
     expect(maxInFlight).toBe(2);
   });
 });
+
+describe("Orchestrator.run — synthesis", () => {
+  it("does not call synthesis or set `final` when synthesize is false (default)", async () => {
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON))
+      .mockResolvedValueOnce(ok("done"))
+      .mockResolvedValueOnce(ok('{"approved": true}'));
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    const result = await orchestrator.run("task");
+    expect(result.final).toBeUndefined();
+    expect(generate).toHaveBeenCalledTimes(3);
+  });
+
+  it("makes one extra generate() call and sets `final` when synthesize is true", async () => {
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON))
+      .mockResolvedValueOnce(ok("done"))
+      .mockResolvedValueOnce(ok('{"approved": true}'))
+      .mockResolvedValueOnce(ok("Here is the combined answer."));
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    const result = await orchestrator.run("task", { synthesize: true });
+    expect(result.final).toBe("Here is the combined answer.");
+    expect(generate).toHaveBeenCalledTimes(4);
+
+    const synthesisCall = generate.mock.calls[3]![0];
+    expect(synthesisCall.prompt).toContain("do the thing");
+    expect(synthesisCall.prompt).toContain("unresolved: false");
+  });
+
+  it("notes unresolved and errored subtasks explicitly in the synthesis prompt", async () => {
+    const twoSubtasks = JSON.stringify([
+      { id: "t1", description: "a" },
+      { id: "t2", description: "b" },
+    ]);
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(twoSubtasks)) // decompose
+      .mockResolvedValueOnce(ok("draft")) // t1 generate
+      .mockResolvedValueOnce(ok('{"approved": false, "feedback": "no"}')) // t1 critique rejects
+      .mockResolvedValueOnce(ok("still bad")) // t1 retry (maxRounds=1 default -> exhausted)
+      .mockRejectedValueOnce(new Error("boom")) // t2 generate fails
+      .mockResolvedValueOnce(ok("synthesis text")); // synthesis
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+    // maxConcurrency: 1 forces the single-worker sequential path, so the
+    // mock's call order below is deterministic (t1 fully settles before t2 starts).
+    const result = await orchestrator.run("task", { synthesize: true, maxConcurrency: 1 });
+
+    expect(result.final).toBe("synthesis text");
+    const synthesisCall = generate.mock.calls[generate.mock.calls.length - 1]![0];
+    expect(synthesisCall.prompt).toContain("unresolved: true");
+    expect(synthesisCall.prompt).toContain("error: boom");
+  });
+});

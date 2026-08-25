@@ -99,6 +99,9 @@ export class Orchestrator {
 
     const result: OrchestratorResult = { subtasks: results };
     if (truncatedSubtaskCount > 0) result.truncatedSubtaskCount = truncatedSubtaskCount;
+    if (opts.synthesize) {
+      result.final = await this.synthesize(taskText, results, opts.metaProvider);
+    }
     return result;
   }
 
@@ -206,6 +209,30 @@ export class Orchestrator {
         error: cause instanceof Error ? cause.message : String(cause),
       };
     }
+  }
+
+  private async synthesize(
+    taskText: string,
+    results: SubtaskResult[],
+    metaProvider: string | undefined,
+  ): Promise<string> {
+    const strategy = this.registry.get(this.getMetaProviderName(metaProvider));
+    const summary = results
+      .map((r) => {
+        const status = r.error
+          ? `error: ${r.error}`
+          : `unresolved: ${r.unresolved}`;
+        return `- ${r.subtask.id} (${r.subtask.description}) [${status}]:\n${r.result || "(no output)"}`;
+      })
+      .join("\n\n");
+
+    const prompt =
+      `Original task: ${taskText}\n\nSubtask results:\n${summary}\n\n` +
+      `Write the final combined answer. If any subtask above is marked "unresolved: true" ` +
+      `or has an "error", explicitly note that gap instead of presenting a fully confident answer.`;
+
+    const response = await strategy.generate({ prompt });
+    return response.text;
   }
 
   private async executeSubtask(
