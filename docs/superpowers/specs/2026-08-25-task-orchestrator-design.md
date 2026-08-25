@@ -190,18 +190,24 @@ Algorithm per subtask:
 1. Compute the available-provider set: every registered provider name
    where (override says `available: true`) OR (no override, and
    `hasPlatformKey?.() === true`) OR (`apiKeys[name]` is set).
-2. If `subtask.requiredCapabilities` is empty/absent, or no available
-   provider's tags intersect it at all, go straight to LLM-fallback.
-3. Otherwise score each available provider by tag-overlap count. A unique
+2. If exactly one provider is available, route to it directly —
+   `method: "rule"`, rationale `"Only available provider"` — without
+   spending an LLM-fallback call to pick among a list of one. This also
+   means a single-provider registry (the common case in tests and small
+   deployments) never pays the fallback call.
+3. Otherwise, if `subtask.requiredCapabilities` is empty/absent, or no
+   available provider's tags intersect it at all, go straight to
+   LLM-fallback.
+4. Otherwise score each available provider by tag-overlap count. A unique
    top scorer → `method: "rule"`. A tie → LLM-fallback (ties are exactly
    the case rules can't decide).
-4. LLM-fallback: one `generate()` call through `metaProvider`, given the
+5. LLM-fallback: one `generate()` call through `metaProvider`, given the
    subtask description and the available-provider list (name +
    capabilities only — never a provider absent from the available set), asking
    for `{provider, model?, rationale}` as JSON. If the returned provider
    isn't in the available set, treat it as router error
    (`NoAvailableProviderError`) rather than silently using it.
-5. If the available-provider set is empty for a subtask, throw
+6. If the available-provider set is empty for a subtask, throw
    `NoAvailableProviderError` for that subtask (caught by the Orchestrator
    per the partial-failure policy in §8.4 — it does not abort the whole run).
 
@@ -231,7 +237,10 @@ interface RunOptions {
 
 interface SubtaskResult {
   subtask: Subtask;
-  decision: RoutingDecision;
+  /** Absent when routing itself failed (see `error` below) — there is no
+   *  decision to report, and inventing a placeholder one would misreport
+   *  that a provider was chosen. */
+  decision?: RoutingDecision;
   result: string;
   rounds: number;
   unresolved: boolean;
@@ -275,10 +284,16 @@ silently dropping the rest.
 
 ### 8.2 Route
 
-`taskRouter.route(subtasks, { apiKeys, providerOverrides })` — see §7.
-A subtask whose routing throws `NoAvailableProviderError` gets a
-`SubtaskResult` with `error` set and skips execution (§8.4); it does not
-block routing/execution of the other subtasks.
+The Orchestrator calls `taskRouter.route([subtask], { apiKeys, providerOverrides })`
+**once per subtask** — not one batched call for the whole list — precisely
+so one subtask's `NoAvailableProviderError` can be caught and isolated
+without the exception unwinding a shared call that was also computing
+decisions for every other subtask. A subtask whose routing throws gets a
+`SubtaskResult` with `decision` absent and `error` set (§8.4); it does not
+block routing/execution of the other subtasks. Separately, the Orchestrator
+calls `taskRouter.listAvailableProviders(...)` once per run (availability
+doesn't change mid-run) to give cross-critique a provider list to pick a
+second reviewer from without recomputing it per subtask.
 
 ### 8.3 Execute-with-critique loop (per subtask, run concurrently up to `maxConcurrency`)
 
