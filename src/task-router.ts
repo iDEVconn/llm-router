@@ -69,7 +69,7 @@ export class TaskRouter {
       if (available.length === 0) {
         throw new NoAvailableProviderError(subtask.id);
       }
-      decisions.push(await this.routeOne(subtask, available));
+      decisions.push(await this.routeOne(subtask, available, opts.apiKeys));
     }
     return decisions;
   }
@@ -104,7 +104,11 @@ export class TaskRouter {
     });
   }
 
-  private async routeOne(subtask: Subtask, available: ResolvedProvider[]): Promise<RoutingDecision> {
+  private async routeOne(
+    subtask: Subtask,
+    available: ResolvedProvider[],
+    apiKeys?: Record<string, string>,
+  ): Promise<RoutingDecision> {
     if (available.length === 1) {
       return {
         subtaskId: subtask.id,
@@ -137,15 +141,20 @@ export class TaskRouter {
       }
     }
 
-    return this.llmFallback(subtask, available);
+    return this.llmFallback(subtask, available, apiKeys);
   }
 
   private getMetaProviderName(): string {
     return this.metaProviderName ?? this.registry.getPlatform().providerName;
   }
 
-  private async llmFallback(subtask: Subtask, available: ResolvedProvider[]): Promise<RoutingDecision> {
-    const metaStrategy = this.registry.get(this.getMetaProviderName());
+  private async llmFallback(
+    subtask: Subtask,
+    available: ResolvedProvider[],
+    apiKeys?: Record<string, string>,
+  ): Promise<RoutingDecision> {
+    const metaProviderName = this.getMetaProviderName();
+    const metaStrategy = this.registry.get(metaProviderName);
     const candidateList = available
       .map((p) => `- ${p.name} (capabilities: ${p.capabilities.join(", ") || "none listed"})`)
       .join("\n");
@@ -155,7 +164,7 @@ export class TaskRouter {
       `Respond with ONLY a JSON object: {"provider": string, "model"?: string, "rationale"?: string}.\n\n` +
       `Subtask: ${subtask.description}\n\nAvailable providers:\n${candidateList}`;
 
-    const response = await metaStrategy.generate({ prompt });
+    const response = await metaStrategy.generate({ prompt, apiKey: apiKeys?.[metaProviderName] });
     const stripped = response.text.trim().replace(/^```(?:json)?\n?/, "").replace(/```$/, "");
     const parsed = JSON.parse(stripped) as { provider: string; model?: string; rationale?: string };
 

@@ -154,6 +154,18 @@ describe("TaskRouter.route", () => {
     );
   });
 
+  it("passes the meta provider's apiKey from opts.apiKeys to the LLM-fallback generate() call", async () => {
+    const generate = vi.fn().mockResolvedValue(fallbackResponse('{"provider": "p"}'));
+    const p = makeStrategy("p", { hasPlatformKey: () => false, generate });
+    const q = makeStrategy("q", { hasPlatformKey: () => true });
+    const registry = new LlmRegistry({ strategies: [p, q], platform: "q" });
+    const router = new TaskRouter({ registry, metaProvider: "p" });
+
+    await router.route([{ id: "t1", description: "x" }], { apiKeys: { p: "user-key" } });
+
+    expect(generate.mock.calls[0]![0]).toMatchObject({ apiKey: "user-key" });
+  });
+
   it("strips a fenced code block from the LLM-fallback response before parsing", async () => {
     const generate = vi
       .fn()

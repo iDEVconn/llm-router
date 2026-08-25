@@ -63,6 +63,7 @@ export class Orchestrator {
       taskText,
       opts.metaProvider,
       maxSubtasks,
+      opts.apiKeys,
     );
 
     const availableProviders = await this.taskRouter.listAvailableProviders({
@@ -88,19 +89,23 @@ export class Orchestrator {
     taskText: string,
     metaProvider: string | undefined,
     maxSubtasks: number,
+    apiKeys: Record<string, string> | undefined,
   ): Promise<{ subtasks: Subtask[]; truncatedSubtaskCount: number }> {
-    const strategy = this.registry.get(this.getMetaProviderName(metaProvider));
+    const metaProviderName = this.getMetaProviderName(metaProvider);
+    const strategy = this.registry.get(metaProviderName);
+    const apiKey = apiKeys?.[metaProviderName];
     const basePrompt =
       `Split the following task into independent subtasks. Respond with ONLY a JSON array ` +
       `of objects: {"id": string, "description": string, "requiredCapabilities"?: string[]}. ` +
       `requiredCapabilities may only use these tags: ${KNOWN_CAPABILITY_TAGS.join(", ")}.\n\n` +
       `Task: ${taskText}`;
 
-    let subtasks = await this.tryParseSubtasks(strategy, basePrompt);
+    let subtasks = await this.tryParseSubtasks(strategy, basePrompt, apiKey);
     if (!subtasks) {
       subtasks = await this.tryParseSubtasks(
         strategy,
         `${basePrompt}\n\nYour previous response was not valid JSON. Return only the JSON array, no prose.`,
+        apiKey,
       );
     }
     if (!subtasks) {
@@ -114,13 +119,23 @@ export class Orchestrator {
   }
 
   private async tryParseSubtasks(
-    strategy: { generate: (opts: { prompt: string }) => Promise<{ text: string }> },
+    strategy: {
+      generate: (opts: { prompt: string; apiKey?: string }) => Promise<{ text: string }>;
+    },
     prompt: string,
+    apiKey: string | undefined,
   ): Promise<Subtask[] | null> {
-    const response = await strategy.generate({ prompt });
     try {
+      const response = await strategy.generate({ prompt, apiKey });
       const parsed = JSON.parse(stripFence(response.text));
       if (!Array.isArray(parsed)) return null;
+      if (
+        !parsed.every(
+          (item) => typeof item?.id === "string" && typeof item?.description === "string",
+        )
+      ) {
+        return null;
+      }
       return parsed.map(
         (item: { id: string; description: string; requiredCapabilities?: string[] }) => ({
           id: item.id,
@@ -129,6 +144,9 @@ export class Orchestrator {
         }),
       );
     } catch {
+      // Covers both a rejected generate() call (network/auth/rate-limit) and
+      // JSON-parse/shape failures — either way this attempt didn't produce a
+      // usable subtask array, so decompose()'s retry-then-error path handles it.
       return null;
     }
   }

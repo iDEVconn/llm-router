@@ -93,6 +93,48 @@ describe("Orchestrator.run — decompose", () => {
     expect(result.subtasks).toHaveLength(2);
     expect(result.truncatedSubtaskCount).toBe(1);
   });
+
+  it("treats a rejected decompose generate() call as unparseable, retries, then throws TaskDecompositionError", async () => {
+    const generate = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockRejectedValueOnce(new Error("still down"));
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    await expect(orchestrator.run("build a widget")).rejects.toThrow(
+      /Failed to decompose the task/,
+    );
+    expect(generate).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries decompose once when parsed items have the wrong shape, then throws TaskDecompositionError", async () => {
+    const generate = vi.fn().mockResolvedValue(ok('[{"task": "not the right shape"}]'));
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    await expect(orchestrator.run("build a widget")).rejects.toThrow(
+      /Failed to decompose the task/,
+    );
+    expect(generate).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes the meta provider's apiKey from opts.apiKeys to the decompose generate() call", async () => {
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON))
+      .mockResolvedValueOnce(ok("done"))
+      .mockResolvedValueOnce(ok('{"approved": true}'));
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    await orchestrator.run("build a widget", { apiKeys: { p: "secret-key" } });
+
+    expect(generate.mock.calls[0]![0]).toMatchObject({ apiKey: "secret-key" });
+  });
 });
 
 describe("Orchestrator.run — critique loop", () => {
