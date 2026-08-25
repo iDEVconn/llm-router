@@ -1,5 +1,11 @@
 # @idevconn/llm-router
 
+## 0.7.0
+
+### Minor Changes
+
+- a240b54: Add `TaskRouter` and `Orchestrator` for capability-based multi-provider task routing, plus `ChatGptStrategy` and `DeepSeekStrategy` adapters. `LlmStrategy` gains two optional members, `hasPlatformKey?()` and `capabilities?`, which existing custom strategies can ignore without breaking.
+
 ## 0.6.0
 
 ### Minor Changes
