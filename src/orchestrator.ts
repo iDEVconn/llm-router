@@ -38,6 +38,7 @@ export interface OrchestratorResult {
 
 const DEFAULT_MAX_ROUNDS = 1;
 const DEFAULT_MAX_SUBTASKS = 20;
+const DEFAULT_MAX_CONCURRENCY = 3;
 
 interface AvailableProvider {
   name: string;
@@ -46,6 +47,26 @@ interface AvailableProvider {
 
 function stripFence(text: string): string {
   return text.trim().replace(/^```(?:json)?\n?/, "").replace(/```$/, "");
+}
+
+async function runWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]!, index);
+    }
+  }
+
+  const workerCount = Math.min(Math.max(limit, 1), items.length || 1);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
 }
 
 export class Orchestrator {
@@ -71,10 +92,10 @@ export class Orchestrator {
       providerOverrides: opts.providerOverrides,
     });
 
-    const results: SubtaskResult[] = [];
-    for (const subtask of subtasks) {
-      results.push(await this.routeAndExecute(subtask, opts, availableProviders));
-    }
+    const maxConcurrency = opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+    const results = await runWithConcurrency(subtasks, maxConcurrency, (subtask) =>
+      this.routeAndExecute(subtask, opts, availableProviders),
+    );
 
     const result: OrchestratorResult = { subtasks: results };
     if (truncatedSubtaskCount > 0) result.truncatedSubtaskCount = truncatedSubtaskCount;

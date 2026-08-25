@@ -3,6 +3,14 @@ import { LlmRegistry } from "../registry";
 import { Orchestrator } from "../orchestrator";
 import type { LlmResponse, LlmStrategy } from "../types";
 
+async function flushUntil(predicate: () => boolean, maxTicks = 50): Promise<void> {
+  for (let i = 0; i < maxTicks; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`flushUntil: condition not met after ${maxTicks} ticks`);
+}
+
 function ok(text: string, finish: "stop" | "length" = "stop"): LlmResponse {
   return {
     text,
@@ -289,5 +297,63 @@ describe("Orchestrator.run — partial failure isolation", () => {
     expect(t1.error).toBe("network down");
     expect(t1.unresolved).toBe(true);
     expect(t2).toMatchObject({ result: "t2 done", unresolved: false });
+  });
+});
+
+describe("Orchestrator.run — concurrency", () => {
+  it("never runs more than maxConcurrency subtasks at once", async () => {
+    // Single registered provider -> TaskRouter's single-available-provider
+    // shortcut routes every subtask directly, with zero extra generate()
+    // calls for routing. Combined with maxRounds: 0 (no critique calls),
+    // the only generate() calls are: one decompose call, then exactly one
+    // execution call per subtask -- which is what this test measures.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const releases: Array<() => void> = [];
+
+    const fourSubtasks = JSON.stringify([
+      { id: "t1", description: "a" },
+      { id: "t2", description: "b" },
+      { id: "t3", description: "c" },
+      { id: "t4", description: "d" },
+    ]);
+
+    const generate = vi.fn().mockImplementation(() => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return new Promise<LlmResponse>((resolve) => {
+        releases.push(() => {
+          inFlight--;
+          resolve(ok("done"));
+        });
+      });
+    });
+    generate.mockImplementationOnce(() => Promise.resolve(ok(fourSubtasks)));
+
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    const runPromise = orchestrator.run("task", { maxConcurrency: 2, maxRounds: 0 });
+
+    // Let the decompose call resolve and the first wave of subtask
+    // generate() calls start (each hangs until its release() fires). Poll
+    // on the actual condition rather than counting microtask flushes, since
+    // the number of `await` hops between run() and this mock is an
+    // implementation detail of the call chain (decompose ->
+    // listAvailableProviders -> runWithConcurrency -> routeAndExecute ->
+    // route/routeOne -> executeSubtask -> generateForSubtask -> generate)
+    // that can silently grow or shrink under unrelated future refactors.
+    await flushUntil(() => inFlight === 2);
+    expect(inFlight).toBe(2);
+
+    releases.splice(0).forEach((release) => release());
+    await flushUntil(() => inFlight === 2);
+    expect(inFlight).toBe(2);
+
+    releases.splice(0).forEach((release) => release());
+    await runPromise;
+
+    expect(maxInFlight).toBe(2);
   });
 });
