@@ -392,6 +392,42 @@ describe("Orchestrator.run — synthesis", () => {
     const synthesisCall = generate.mock.calls[3]![0];
     expect(synthesisCall.prompt).toContain("do the thing");
     expect(synthesisCall.prompt).toContain("unresolved: false");
+    expect(synthesisCall.prompt).toContain("explicitly note that gap");
+  });
+
+  it("passes the meta provider's apiKey from opts.apiKeys to the synthesis generate() call", async () => {
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON))
+      .mockResolvedValueOnce(ok("done"))
+      .mockResolvedValueOnce(ok('{"approved": true}'))
+      .mockResolvedValueOnce(ok("Here is the combined answer."));
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    await orchestrator.run("task", { synthesize: true, apiKeys: { p: "secret-key" } });
+
+    const synthesisCall = generate.mock.calls[3]![0];
+    expect(synthesisCall).toMatchObject({ apiKey: "secret-key" });
+  });
+
+  it("resolves run() with the completed subtasks and no `final` when the synthesis generate() call fails", async () => {
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON))
+      .mockResolvedValueOnce(ok("done"))
+      .mockResolvedValueOnce(ok('{"approved": true}'))
+      .mockRejectedValueOnce(new Error("synthesis provider down"));
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    const result = await orchestrator.run("task", { synthesize: true });
+
+    expect(result.final).toBeUndefined();
+    expect(result.subtasks).toHaveLength(1);
+    expect(result.subtasks[0]).toMatchObject({ result: "done", unresolved: false });
   });
 
   it("notes unresolved and errored subtasks explicitly in the synthesis prompt", async () => {

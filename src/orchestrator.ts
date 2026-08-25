@@ -100,7 +100,14 @@ export class Orchestrator {
     const result: OrchestratorResult = { subtasks: results };
     if (truncatedSubtaskCount > 0) result.truncatedSubtaskCount = truncatedSubtaskCount;
     if (opts.synthesize) {
-      result.final = await this.synthesize(taskText, results, opts.metaProvider);
+      try {
+        result.final = await this.synthesize(taskText, results, opts.metaProvider, opts.apiKeys);
+      } catch {
+        // Synthesis is a best-effort final step layered on top of subtasks
+        // that already exist — a BYOK key error or a transient provider
+        // failure here must not discard the completed subtask breakdown.
+        // Leave `final` unset, same as the synthesize: false case.
+      }
     }
     return result;
   }
@@ -215,8 +222,11 @@ export class Orchestrator {
     taskText: string,
     results: SubtaskResult[],
     metaProvider: string | undefined,
+    apiKeys: Record<string, string> | undefined,
   ): Promise<string> {
-    const strategy = this.registry.get(this.getMetaProviderName(metaProvider));
+    const metaProviderName = this.getMetaProviderName(metaProvider);
+    const strategy = this.registry.get(metaProviderName);
+    const apiKey = apiKeys?.[metaProviderName];
     const summary = results
       .map((r) => {
         const status = r.error
@@ -231,7 +241,7 @@ export class Orchestrator {
       `Write the final combined answer. If any subtask above is marked "unresolved: true" ` +
       `or has an "error", explicitly note that gap instead of presenting a fully confident answer.`;
 
-    const response = await strategy.generate({ prompt });
+    const response = await strategy.generate({ prompt, apiKey });
     return response.text;
   }
 
