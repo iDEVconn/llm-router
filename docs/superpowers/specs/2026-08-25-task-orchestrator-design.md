@@ -172,6 +172,16 @@ class TaskRouter {
     subtasks: readonly Subtask[],
     opts?: { apiKeys?: Record<string, string>; providerOverrides?: readonly ProviderDescriptor[] },
   ): Promise<RoutingDecision[]>;
+  /**
+   * The resolved available-provider set (name + capabilities) for the
+   * given call options, computed the same way `route()` computes it
+   * internally. Exposed so `Orchestrator`'s cross-critique picks a second
+   * provider from the same availability computation `route()` used,
+   * instead of duplicating that logic.
+   */
+  listAvailableProviders(
+    opts?: { apiKeys?: Record<string, string>; providerOverrides?: readonly ProviderDescriptor[] },
+  ): Promise<Array<{ name: string; capabilities: readonly string[] }>>;
 }
 ```
 
@@ -235,6 +245,9 @@ interface OrchestratorResult {
   subtasks: SubtaskResult[];
   /** Present only when `synthesize: true`. */
   final?: string;
+  /** Present only when decompose() returned more subtasks than
+   *  `maxSubtasks` allowed; counts the dropped tail. */
+  truncatedSubtaskCount?: number;
 }
 
 class Orchestrator {
@@ -290,15 +303,25 @@ State machine, precisely, for `maxRounds = R`:
 4. `approved: true` → stop, return output, `unresolved: false`.
 5. `approved: false` and `rounds < R` → one retry `generate()` call,
    passing the original description plus the critique feedback verbatim.
-   `rounds += 1`. **The retry's output is not critiqued again** — one
-   round is exactly one generate-critique-retry sequence, not a re-checked
-   loop. Return the retry's output, `unresolved: false` if this was the
-   last allowed round (retry output is unverified but it's what the round
-   budget bought — flagging it `unresolved` would make `unresolved`
-   ambiguous between "never checked" and "checked and rejected twice").
-6. `approved: false` and `rounds === R` already spent with no rounds left
-   → return the last generated output (pre- or post-retry, whichever is
-   most recent), `unresolved: true`.
+   `rounds += 1`. The retry's output becomes the next round's input: loop
+   back to step 3 and critique it too, exactly like the first output —
+   critique is never skipped for an output that still has round budget
+   left to react to a rejection.
+6. `rounds === R` and the loop returns to step 3 with nothing left to
+   spend on another rejection → **skip that final critique call** (there
+   is no budget left to act on its verdict, so spending a call to learn
+   the answer is waste) and return the current output, `unresolved: true`.
+
+One clean rule replaces the two cases above: **`unresolved` is `true` iff
+the loop exhausted `R` rounds without ever receiving an explicit
+`approved: true` verdict.** A subtask's last attempt is either verified
+good (`unresolved: false`) or it never got a clean verdict at all
+(`unresolved: true`) — there is no third state where an unverified retry
+is reported as resolved. This is a correction from an earlier draft of
+this section, which tried to treat "budget ran out right after a retry"
+as `unresolved: false`; that reading silently reported unverified output
+as resolved, which is the exact failure mode `unresolved` exists to
+surface.
 
 In short: `unresolved` means "the critique step explicitly rejected this
 and no budget was left to react to that rejection" — never "we didn't
@@ -376,3 +399,10 @@ subtask fan-out cap, no concurrency cap, no partial-failure policy,
 synthesis blind to unresolved/errored subtasks, and a fragile
 non-retrying JSON parse on decompose. All eight are addressed above (§5,
 §6, §8.1, §8.3, §8.4, §8.5 respectively) rather than deferred.
+
+A second self-consistency pass during plan-writing found §8.3's original
+two-case `unresolved` rule self-contradictory for `maxRounds > 1` — it
+implied a retry both is and isn't critiqued again depending on which case
+you read. §8.3 now states one rule instead of two: `unresolved` is `true`
+exactly when the loop ran out of rounds without ever seeing an explicit
+approval.
