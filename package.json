@@ -46,6 +46,16 @@
       "types": "./dist/grok.d.ts",
       "import": "./dist/grok.js",
       "require": "./dist/grok.cjs"
+    },
+    "./chatgpt": {
+      "types": "./dist/chatgpt.d.ts",
+      "import": "./dist/chatgpt.js",
+      "require": "./dist/chatgpt.cjs"
+    },
+    "./deepseek": {
+      "types": "./dist/deepseek.d.ts",
+      "import": "./dist/deepseek.js",
+      "require": "./dist/deepseek.cjs"
     }
   },
   "files": [
