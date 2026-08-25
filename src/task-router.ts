@@ -42,6 +42,15 @@ export interface TaskRouterOptions {
 export interface RouteOptions {
   apiKeys?: Record<string, string>;
   providerOverrides?: readonly ProviderDescriptor[];
+  /**
+   * Per-call override of the provider used for the LLM-fallback routing stage.
+   * Takes precedence over the constructor-time `TaskRouterOptions.metaProvider`,
+   * which in turn falls back to `registry.getPlatform()`. Required for
+   * BYOK-only registries (`platform: null`), where there is no platform
+   * provider to fall back to. `listAvailableProviders()` accepts (and ignores)
+   * it so callers can share one options object between both methods.
+   */
+  metaProvider?: string;
 }
 
 interface ResolvedProvider {
@@ -69,7 +78,7 @@ export class TaskRouter {
       if (available.length === 0) {
         throw new NoAvailableProviderError(subtask.id);
       }
-      decisions.push(await this.routeOne(subtask, available, opts.apiKeys));
+      decisions.push(await this.routeOne(subtask, available, opts));
     }
     return decisions;
   }
@@ -107,7 +116,7 @@ export class TaskRouter {
   private async routeOne(
     subtask: Subtask,
     available: ResolvedProvider[],
-    apiKeys?: Record<string, string>,
+    opts: RouteOptions,
   ): Promise<RoutingDecision> {
     if (available.length === 1) {
       return {
@@ -141,19 +150,23 @@ export class TaskRouter {
       }
     }
 
-    return this.llmFallback(subtask, available, apiKeys);
+    return this.llmFallback(subtask, available, opts);
   }
 
-  private getMetaProviderName(): string {
-    return this.metaProviderName ?? this.registry.getPlatform().providerName;
+  /** Per-call override wins, then the constructor-time default, then the platform. */
+  private getMetaProviderName(perCallMetaProvider?: string): string {
+    return (
+      perCallMetaProvider ?? this.metaProviderName ?? this.registry.getPlatform().providerName
+    );
   }
 
   private async llmFallback(
     subtask: Subtask,
     available: ResolvedProvider[],
-    apiKeys?: Record<string, string>,
+    opts: RouteOptions,
   ): Promise<RoutingDecision> {
-    const metaProviderName = this.getMetaProviderName();
+    const apiKeys = opts.apiKeys;
+    const metaProviderName = this.getMetaProviderName(opts.metaProvider);
     const metaStrategy = this.registry.get(metaProviderName);
     const candidateList = available
       .map((p) => `- ${p.name} (capabilities: ${p.capabilities.join(", ") || "none listed"})`)
@@ -165,12 +178,13 @@ export class TaskRouter {
       `Subtask: ${subtask.description}\n\nAvailable providers:\n${candidateList}`;
 
     const response = await metaStrategy.generate({ prompt, apiKey: apiKeys?.[metaProviderName] });
-    const stripped = response.text.trim().replace(/^```(?:json)?\n?/, "").replace(/```$/, "");
-    const parsed = JSON.parse(stripped) as { provider: string; model?: string; rationale?: string };
+    const parsed = parseFallbackDecision(response.text, available);
 
-    if (!available.some((p) => p.name === parsed.provider)) {
-      throw new NoAvailableProviderError(subtask.id);
-    }
+    // Malformed JSON, a non-object payload, and a provider outside the
+    // available set all mean the same thing: no clean routing decision could
+    // be reached for this subtask. Raise the domain error rather than letting
+    // a raw SyntaxError/TypeError escape the router.
+    if (!parsed) throw new NoAvailableProviderError(subtask.id);
 
     return {
       subtaskId: subtask.id,
@@ -180,4 +194,33 @@ export class TaskRouter {
       rationale: parsed.rationale,
     };
   }
+}
+
+function parseFallbackDecision(
+  text: string,
+  available: readonly ResolvedProvider[],
+): { provider: string; model?: string; rationale?: string } | null {
+  const stripped = text.trim().replace(/^```(?:json)?\n?/, "").replace(/```$/, "");
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch {
+    return null;
+  }
+
+  if (typeof parsed !== "object" || parsed === null) return null;
+
+  const { provider, model, rationale } = parsed as {
+    provider?: unknown;
+    model?: unknown;
+    rationale?: unknown;
+  };
+  if (typeof provider !== "string" || !available.some((p) => p.name === provider)) return null;
+
+  return {
+    provider,
+    model: typeof model === "string" ? model : undefined,
+    rationale: typeof rationale === "string" ? rationale : undefined,
+  };
 }

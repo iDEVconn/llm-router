@@ -166,6 +166,63 @@ describe("TaskRouter.route", () => {
     expect(generate.mock.calls[0]![0]).toMatchObject({ apiKey: "user-key" });
   });
 
+  it("prefers a per-call metaProvider over the constructor-time default for the LLM-fallback call", async () => {
+    const platGenerate = vi.fn().mockResolvedValue(fallbackResponse('{"provider": "plat"}'));
+    const metaGenerate = vi
+      .fn()
+      .mockResolvedValue(fallbackResponse('{"provider": "a", "rationale": "meta picked a"}'));
+    const plat = makeStrategy("plat", {
+      capabilities: ["code"],
+      hasPlatformKey: () => true,
+      generate: platGenerate,
+    });
+    const meta = makeStrategy("meta", { hasPlatformKey: () => true, generate: metaGenerate });
+    const a = makeStrategy("a", { capabilities: ["code"], hasPlatformKey: () => true });
+    const registry = new LlmRegistry({ strategies: [plat, meta, a], platform: "plat" });
+    const router = new TaskRouter({ registry, metaProvider: "plat" });
+
+    // "plat" and "a" tie on the "code" tag, so the rule stage can't decide and
+    // the LLM-fallback stage runs — it must go through the call-time
+    // metaProvider, not the constructor-time default or the registry platform.
+    const decisions = await router.route(
+      [{ id: "t1", description: "write code", requiredCapabilities: ["code"] }],
+      { metaProvider: "meta", apiKeys: { meta: "meta-key" } },
+    );
+
+    expect(metaGenerate).toHaveBeenCalledOnce();
+    expect(platGenerate).not.toHaveBeenCalled();
+    expect(metaGenerate.mock.calls[0]![0]).toMatchObject({ apiKey: "meta-key" });
+    expect(decisions[0]).toMatchObject({
+      provider: "a",
+      method: "llm-fallback",
+      rationale: "meta picked a",
+    });
+  });
+
+  it("throws NoAvailableProviderError when the LLM-fallback response is not JSON at all", async () => {
+    const generate = vi.fn().mockResolvedValue(fallbackResponse("Honestly, just use p."));
+    const p = makeStrategy("p", { hasPlatformKey: () => true, generate });
+    const q = makeStrategy("q", { hasPlatformKey: () => true });
+    const registry = new LlmRegistry({ strategies: [p, q], platform: "p" });
+    const router = new TaskRouter({ registry });
+
+    await expect(router.route([{ id: "t1", description: "x" }])).rejects.toBeInstanceOf(
+      NoAvailableProviderError,
+    );
+  });
+
+  it("throws NoAvailableProviderError when the LLM-fallback response parses to null", async () => {
+    const generate = vi.fn().mockResolvedValue(fallbackResponse("null"));
+    const p = makeStrategy("p", { hasPlatformKey: () => true, generate });
+    const q = makeStrategy("q", { hasPlatformKey: () => true });
+    const registry = new LlmRegistry({ strategies: [p, q], platform: "p" });
+    const router = new TaskRouter({ registry });
+
+    await expect(router.route([{ id: "t1", description: "x" }])).rejects.toBeInstanceOf(
+      NoAvailableProviderError,
+    );
+  });
+
   it("strips a fenced code block from the LLM-fallback response before parsing", async () => {
     const generate = vi
       .fn()

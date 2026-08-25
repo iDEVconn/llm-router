@@ -34,6 +34,12 @@ export interface OrchestratorResult {
   subtasks: SubtaskResult[];
   final?: string;
   truncatedSubtaskCount?: number;
+  /**
+   * Set only when `synthesize: true` was requested and the synthesis call
+   * failed. Lets a caller tell "synthesis wasn't asked for" apart from
+   * "synthesis was attempted and failed" — both leave `final` unset.
+   */
+  synthesisError?: string;
 }
 
 const DEFAULT_MAX_ROUNDS = 1;
@@ -43,6 +49,20 @@ const DEFAULT_MAX_CONCURRENCY = 3;
 interface AvailableProvider {
   name: string;
   capabilities: readonly string[];
+}
+
+/** One decompose attempt: parsed subtasks, or why it failed. */
+interface DecomposeAttempt {
+  subtasks: Subtask[] | null;
+  /**
+   * Set only when `strategy.generate()` itself rejected (network, 401, rate
+   * limit) — i.e. a provider failure, not a "model returned garbage" failure.
+   */
+  generateError?: unknown;
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 function stripFence(text: string): string {
@@ -90,6 +110,7 @@ export class Orchestrator {
     const availableProviders = await this.taskRouter.listAvailableProviders({
       apiKeys: opts.apiKeys,
       providerOverrides: opts.providerOverrides,
+      metaProvider: opts.metaProvider,
     });
 
     const maxConcurrency = opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
@@ -101,12 +122,20 @@ export class Orchestrator {
     if (truncatedSubtaskCount > 0) result.truncatedSubtaskCount = truncatedSubtaskCount;
     if (opts.synthesize) {
       try {
-        result.final = await this.synthesize(taskText, results, opts.metaProvider, opts.apiKeys);
-      } catch {
+        result.final = await this.synthesize(
+          taskText,
+          results,
+          opts.metaProvider,
+          opts.apiKeys,
+          truncatedSubtaskCount,
+        );
+      } catch (cause) {
         // Synthesis is a best-effort final step layered on top of subtasks
         // that already exist — a BYOK key error or a transient provider
         // failure here must not discard the completed subtask breakdown.
-        // Leave `final` unset, same as the synthesize: false case.
+        // Leave `final` unset, but record why so the caller can tell this
+        // apart from the synthesize: false case.
+        result.synthesisError = errorMessage(cause);
       }
     }
     return result;
@@ -131,20 +160,25 @@ export class Orchestrator {
       `requiredCapabilities may only use these tags: ${KNOWN_CAPABILITY_TAGS.join(", ")}.\n\n` +
       `Task: ${taskText}`;
 
-    let subtasks = await this.tryParseSubtasks(strategy, basePrompt, apiKey);
-    if (!subtasks) {
-      subtasks = await this.tryParseSubtasks(
+    let attempt = await this.tryParseSubtasks(strategy, basePrompt, apiKey);
+    if (!attempt.subtasks) {
+      attempt = await this.tryParseSubtasks(
         strategy,
         `${basePrompt}\n\nYour previous response was not valid JSON. Return only the JSON array, no prose.`,
         apiKey,
       );
     }
-    if (!subtasks) {
+    if (!attempt.subtasks) {
+      // Prefer the real provider error when the last attempt failed because
+      // generate() rejected; only fall back to the synthetic message when the
+      // model actually answered but the payload was unusable.
       throw new TaskDecompositionError(
-        new Error("Model did not return a parseable JSON array after one retry."),
+        attempt.generateError ??
+          new Error("Model did not return a parseable JSON array after one retry."),
       );
     }
 
+    const subtasks = attempt.subtasks;
     const truncatedSubtaskCount = Math.max(0, subtasks.length - maxSubtasks);
     return { subtasks: subtasks.slice(0, maxSubtasks), truncatedSubtaskCount };
   }
@@ -155,30 +189,41 @@ export class Orchestrator {
     },
     prompt: string,
     apiKey: string | undefined,
-  ): Promise<Subtask[] | null> {
+  ): Promise<DecomposeAttempt> {
+    let response: { text: string };
     try {
-      const response = await strategy.generate({ prompt, apiKey });
+      response = await strategy.generate({ prompt, apiKey });
+    } catch (generateError) {
+      // A rejected generate() (network/auth/rate-limit) is a provider failure,
+      // not a "model returned garbage" failure. Keep the real error so
+      // decompose() can surface it as the TaskDecompositionError cause instead
+      // of misattributing it to unparseable JSON.
+      return { subtasks: null, generateError };
+    }
+
+    try {
       const parsed = JSON.parse(stripFence(response.text));
-      if (!Array.isArray(parsed)) return null;
+      if (!Array.isArray(parsed)) return { subtasks: null };
       if (
         !parsed.every(
           (item) => typeof item?.id === "string" && typeof item?.description === "string",
         )
       ) {
-        return null;
+        return { subtasks: null };
       }
-      return parsed.map(
-        (item: { id: string; description: string; requiredCapabilities?: string[] }) => ({
-          id: item.id,
-          description: item.description,
-          requiredCapabilities: item.requiredCapabilities,
-        }),
-      );
+      return {
+        subtasks: parsed.map(
+          (item: { id: string; description: string; requiredCapabilities?: string[] }) => ({
+            id: item.id,
+            description: item.description,
+            requiredCapabilities: item.requiredCapabilities,
+          }),
+        ),
+      };
     } catch {
-      // Covers both a rejected generate() call (network/auth/rate-limit) and
-      // JSON-parse/shape failures — either way this attempt didn't produce a
-      // usable subtask array, so decompose()'s retry-then-error path handles it.
-      return null;
+      // The model answered, but not with a parseable JSON array — a genuine
+      // decomposition failure that decompose()'s retry path handles.
+      return { subtasks: null };
     }
   }
 
@@ -192,28 +237,28 @@ export class Orchestrator {
       const decisions = await this.taskRouter.route([subtask], {
         apiKeys: opts.apiKeys,
         providerOverrides: opts.providerOverrides,
+        // Without this the router's own LLM-fallback stage would fall back to
+        // registry.getPlatform(), which throws in BYOK-only mode even when the
+        // caller supplied both a metaProvider and its apiKey.
+        metaProvider: opts.metaProvider,
       });
       decision = decisions[0]!;
     } catch (cause) {
-      return {
-        subtask,
-        result: "",
-        rounds: 0,
-        unresolved: true,
-        error: cause instanceof Error ? cause.message : String(cause),
-      };
+      return { subtask, result: "", rounds: 0, unresolved: true, error: errorMessage(cause) };
     }
 
     try {
       return await this.executeSubtask(subtask, decision, opts, availableProviders);
     } catch (cause) {
+      // Reached only when the very first generateForSubtask() call fails —
+      // there is no prior output to preserve in that case.
       return {
         subtask,
         decision,
         result: "",
         rounds: 0,
         unresolved: true,
-        error: cause instanceof Error ? cause.message : String(cause),
+        error: errorMessage(cause),
       };
     }
   }
@@ -223,6 +268,7 @@ export class Orchestrator {
     results: SubtaskResult[],
     metaProvider: string | undefined,
     apiKeys: Record<string, string> | undefined,
+    truncatedSubtaskCount: number,
   ): Promise<string> {
     const metaProviderName = this.getMetaProviderName(metaProvider);
     const strategy = this.registry.get(metaProviderName);
@@ -236,8 +282,17 @@ export class Orchestrator {
       })
       .join("\n\n");
 
+    // Subtasks dropped before routing are a gap too — synthesis can't note
+    // what it never sees, so tell it explicitly (spec §8.5).
+    const truncationNote =
+      truncatedSubtaskCount > 0
+        ? `${truncatedSubtaskCount} additional subtask${truncatedSubtaskCount === 1 ? "" : "s"} ` +
+          `were dropped before routing because of the maxSubtasks limit and were never attempted. ` +
+          `Note that gap as well.\n\n`
+        : "";
+
     const prompt =
-      `Original task: ${taskText}\n\nSubtask results:\n${summary}\n\n` +
+      `Original task: ${taskText}\n\nSubtask results:\n${summary}\n\n${truncationNote}` +
       `Write the final combined answer. If any subtask above is marked "unresolved: true" ` +
       `or has an "error", explicitly note that gap instead of presenting a fully confident answer.`;
 
@@ -260,14 +315,48 @@ export class Orchestrator {
       return { subtask, decision, result: output, rounds: 0, unresolved: false };
     }
 
+    // Once a first answer exists, a failure in the critique/retry machinery
+    // must not throw it away: return that answer flagged best-effort rather
+    // than letting routeAndExecute's catch blank the result out (spec §8.3).
     let rounds = 0;
     while (rounds < maxRounds) {
-      const verdict = await this.critique(subtask, output, decision, opts, availableProviders);
+      let verdict: { approved: boolean; feedback?: string };
+      try {
+        verdict = await this.critique(subtask, output, decision, opts, availableProviders);
+      } catch (cause) {
+        return {
+          subtask,
+          decision,
+          result: output,
+          rounds,
+          unresolved: true,
+          error: errorMessage(cause),
+        };
+      }
+
       if (verdict.approved) {
         return { subtask, decision, result: output, rounds, unresolved: false };
       }
+
       rounds += 1;
-      output = await this.generateForSubtask(strategy, subtask, decision, apiKey, verdict.feedback);
+      try {
+        output = await this.generateForSubtask(
+          strategy,
+          subtask,
+          decision,
+          apiKey,
+          verdict.feedback,
+        );
+      } catch (cause) {
+        return {
+          subtask,
+          decision,
+          result: output,
+          rounds,
+          unresolved: true,
+          error: errorMessage(cause),
+        };
+      }
     }
 
     return { subtask, decision, result: output, rounds, unresolved: true };

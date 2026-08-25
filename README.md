@@ -5,10 +5,10 @@ Library-agnostic LLM router. Provider-neutral `LlmStrategy` interface + `LlmRegi
 ## Features
 
 - Pure router core: zero SDK dependencies on the main entry. Just types + `LlmRegistry`.
-- Subpath adapters: `@idevconn/llm-router/gemini`, `/claude`, `/grok`. Each declares its SDK as an **optional** peer dependency, so consumers install only what they need.
+- Subpath adapters: `@idevconn/llm-router/gemini`, `/claude`, `/grok`, `/chatgpt`, `/deepseek`. Each declares its SDK as an **optional** peer dependency, so consumers install only what they need.
 - BYOK first-class: every strategy accepts a per-call `apiKey` that overrides the platform key for that one request.
 - Platform-fallback fully optional: pass `platform: null` to `LlmRegistry` to require BYOK from every caller — useful for SaaS that doesn't subsidize AI usage.
-- Typed errors: `UnknownProviderError`, `NoPlatformProviderError`, `InvalidPlatformProviderError`, `LlmKeyValidationError`, `UnsupportedAttachmentError`. No framework-specific exceptions.
+- Typed errors: `UnknownProviderError`, `NoPlatformProviderError`, `InvalidPlatformProviderError`, `LlmKeyValidationError`, `UnsupportedAttachmentError`, `TaskDecompositionError`, `NoAvailableProviderError`. No framework-specific exceptions.
 
 ## Install
 
@@ -80,6 +80,17 @@ class OllamaStrategy implements LlmStrategy {
 }
 ```
 
+`hasPlatformKey()` and `capabilities` are optional, so a strategy like the one
+above works fine for direct `registry.get("ollama").generate(...)` calls. It
+just won't participate in `TaskRouter`'s automatic matching: without
+`hasPlatformKey()` the router treats it as unavailable, and without
+`capabilities` it never wins the capability-tag rule stage. To opt a custom
+strategy in without implementing either, pass a `providerOverrides` entry
+(a `ProviderDescriptor`: `{ provider, available?, capabilities? }`) on the
+`TaskRouter.route()` / `Orchestrator.run()` call — or supply that provider's
+key in `apiKeys`, which marks it available for that call. Either way it then
+routes like a built-in. See [Task orchestration](#task-orchestration) below.
+
 ## Task orchestration
 
 `Orchestrator` splits a free-text task into subtasks and runs each on
@@ -115,9 +126,9 @@ Routing is capability-tag matching first (`TaskRouter`'s rule stage),
 falling back to a one-shot LLM classifier call when tags don't decide it.
 Each subtask runs through a bounded critique/retry loop (`maxRounds`,
 default 1) before being flagged `unresolved: true` in its result. One
-subtask's failure never aborts the run — see
-`docs/superpowers/specs/2026-08-25-task-orchestrator-design.md` for the
-full design.
+subtask's failure never aborts the run — see the
+[task-orchestrator design doc](https://github.com/iDEVconn/llm-router/blob/main/docs/superpowers/specs/2026-08-25-task-orchestrator-design.md)
+for the full design.
 
 ## Error mapping
 

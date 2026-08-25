@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { TaskDecompositionError } from "../errors";
 import { LlmRegistry } from "../registry";
 import { Orchestrator } from "../orchestrator";
 import type { LlmResponse, LlmStrategy } from "../types";
@@ -77,8 +78,13 @@ describe("Orchestrator.run — decompose", () => {
     const registry = new LlmRegistry({ strategies: [p], platform: "p" });
     const orchestrator = new Orchestrator({ registry });
 
-    await expect(orchestrator.run("build a widget")).rejects.toThrow(
-      /Failed to decompose the task/,
+    const error = await orchestrator.run("build a widget").catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(TaskDecompositionError);
+    expect((error as TaskDecompositionError).message).toMatch(/Failed to decompose the task/);
+    // A genuine "model returned garbage" failure keeps the synthetic cause.
+    expect(((error as TaskDecompositionError).cause as Error).message).toMatch(
+      /parseable JSON array/,
     );
     expect(generate).toHaveBeenCalledTimes(2);
   });
@@ -102,7 +108,7 @@ describe("Orchestrator.run — decompose", () => {
     expect(result.truncatedSubtaskCount).toBe(1);
   });
 
-  it("treats a rejected decompose generate() call as unparseable, retries, then throws TaskDecompositionError", async () => {
+  it("retries a rejected decompose generate() call, then surfaces the real provider error as the TaskDecompositionError cause", async () => {
     const generate = vi
       .fn()
       .mockRejectedValueOnce(new Error("network down"))
@@ -111,10 +117,33 @@ describe("Orchestrator.run — decompose", () => {
     const registry = new LlmRegistry({ strategies: [p], platform: "p" });
     const orchestrator = new Orchestrator({ registry });
 
-    await expect(orchestrator.run("build a widget")).rejects.toThrow(
-      /Failed to decompose the task/,
-    );
+    const error = await orchestrator.run("build a widget").catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(TaskDecompositionError);
+    expect((error as TaskDecompositionError).message).toMatch(/Failed to decompose the task/);
+    // The real underlying failure must not be replaced by the generic
+    // "did not return a parseable JSON array" message.
+    expect((error as TaskDecompositionError).cause).toBeInstanceOf(Error);
+    expect(((error as TaskDecompositionError).cause as Error).message).toBe("still down");
+    expect((error as TaskDecompositionError).message).toContain("still down");
     expect(generate).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers when the first decompose generate() call rejects but the retry returns valid JSON", async () => {
+    const generate = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("401 unauthorized")) // first decompose attempt
+      .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON)) // retry decompose attempt
+      .mockResolvedValueOnce(ok("done")) // subtask generate
+      .mockResolvedValueOnce(ok('{"approved": true}')); // self-critique
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    const result = await orchestrator.run("build a widget");
+
+    expect(result.subtasks).toHaveLength(1);
+    expect(result.subtasks[0]).toMatchObject({ result: "done", unresolved: false });
   });
 
   it("retries decompose once when parsed items have the wrong shape, then throws TaskDecompositionError", async () => {
@@ -142,6 +171,51 @@ describe("Orchestrator.run — decompose", () => {
     await orchestrator.run("build a widget", { apiKeys: { p: "secret-key" } });
 
     expect(generate.mock.calls[0]![0]).toMatchObject({ apiKey: "secret-key" });
+  });
+});
+
+describe("Orchestrator.run — metaProvider threading", () => {
+  it("routes a subtask through LLM fallback in BYOK-only mode using the call-time metaProvider", async () => {
+    // registry has NO platform: every provider is BYOK-only, so both
+    // decompose/synthesis AND the router's own LLM-fallback stage must use the
+    // call-time metaProvider. "a" and "b" tie on the "code" tag, forcing the
+    // fallback stage to run.
+    const codeSubtask =
+      '[{"id": "t1", "description": "write code", "requiredCapabilities": ["code"]}]';
+    const metaGenerate = vi.fn().mockImplementation(({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Split the following task")) return Promise.resolve(ok(codeSubtask));
+      if (prompt.includes("Pick the best provider")) return Promise.resolve(ok('{"provider": "a"}'));
+      return Promise.reject(new Error(`unexpected meta prompt: ${prompt}`));
+    });
+    const aGenerate = vi.fn().mockImplementation(({ prompt }: { prompt: string }) => {
+      if (prompt.includes("Does this fully satisfy")) return Promise.resolve(ok('{"approved": true}'));
+      return Promise.resolve(ok("a answer"));
+    });
+    const meta = makeStrategy("meta", { hasPlatformKey: () => false, generate: metaGenerate });
+    const a = makeStrategy("a", {
+      capabilities: ["code"],
+      hasPlatformKey: () => false,
+      generate: aGenerate,
+    });
+    const b = makeStrategy("b", {
+      capabilities: ["code"],
+      hasPlatformKey: () => false,
+      generate: vi.fn(),
+    });
+    const registry = new LlmRegistry({ strategies: [meta, a, b], platform: null });
+    const orchestrator = new Orchestrator({ registry });
+
+    const result = await orchestrator.run("task", {
+      metaProvider: "meta",
+      apiKeys: { meta: "meta-key", a: "a-key", b: "b-key" },
+    });
+
+    expect(result.subtasks[0]!.error).toBeUndefined();
+    expect(result.subtasks[0]).toMatchObject({
+      decision: { provider: "a", method: "llm-fallback" },
+      result: "a answer",
+      unresolved: false,
+    });
   });
 });
 
@@ -189,6 +263,47 @@ describe("Orchestrator.run — critique loop", () => {
 
     const result = await orchestrator.run("task", { maxRounds: 1 });
     expect(result.subtasks[0]).toMatchObject({ result: "revised once", rounds: 1, unresolved: true });
+  });
+
+  it("keeps the first successful answer when the critique call itself rejects", async () => {
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON)) // decompose
+      .mockResolvedValueOnce(ok("first answer")) // subtask generate
+      .mockRejectedValueOnce(new Error("critic down")); // critique call rejects
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    const result = await orchestrator.run("task");
+
+    expect(result.subtasks[0]).toMatchObject({
+      result: "first answer",
+      rounds: 0,
+      unresolved: true,
+      error: "critic down",
+    });
+  });
+
+  it("keeps the pre-retry answer when the retry generate() call rejects", async () => {
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON)) // decompose
+      .mockResolvedValueOnce(ok("draft")) // subtask generate
+      .mockResolvedValueOnce(ok('{"approved": false, "feedback": "more detail"}')) // critique rejects
+      .mockRejectedValueOnce(new Error("retry down")); // retry generate rejects
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    const result = await orchestrator.run("task");
+
+    expect(result.subtasks[0]).toMatchObject({
+      result: "draft",
+      rounds: 1,
+      unresolved: true,
+      error: "retry down",
+    });
   });
 
   it("skips the critique step entirely when maxRounds is 0", async () => {
@@ -412,7 +527,7 @@ describe("Orchestrator.run — synthesis", () => {
     expect(synthesisCall).toMatchObject({ apiKey: "secret-key" });
   });
 
-  it("resolves run() with the completed subtasks and no `final` when the synthesis generate() call fails", async () => {
+  it("resolves run() with the completed subtasks, no `final`, and a synthesisError when the synthesis generate() call fails", async () => {
     const generate = vi
       .fn()
       .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON))
@@ -426,8 +541,59 @@ describe("Orchestrator.run — synthesis", () => {
     const result = await orchestrator.run("task", { synthesize: true });
 
     expect(result.final).toBeUndefined();
+    expect(result.synthesisError).toBe("synthesis provider down");
     expect(result.subtasks).toHaveLength(1);
     expect(result.subtasks[0]).toMatchObject({ result: "done", unresolved: false });
+  });
+
+  it("tells synthesis about subtasks dropped by the maxSubtasks limit", async () => {
+    const threeSubtasks = JSON.stringify([
+      { id: "t1", description: "a" },
+      { id: "t2", description: "b" },
+      { id: "t3", description: "c" },
+    ]);
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(threeSubtasks)) // decompose
+      .mockResolvedValueOnce(ok("a done")) // t1 (maxRounds: 0 -> no critique)
+      .mockResolvedValueOnce(ok("b done")) // t2
+      .mockResolvedValueOnce(ok("synthesis text")); // synthesis
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    const result = await orchestrator.run("task", {
+      synthesize: true,
+      maxSubtasks: 2,
+      maxRounds: 0,
+      maxConcurrency: 1,
+    });
+
+    expect(result.truncatedSubtaskCount).toBe(1);
+    expect(result.final).toBe("synthesis text");
+
+    const synthesisPrompt = generate.mock.calls[3]![0].prompt as string;
+    expect(synthesisPrompt).toContain("1 additional subtask");
+    expect(synthesisPrompt).toContain("maxSubtasks");
+    expect(synthesisPrompt).toContain("never attempted");
+  });
+
+  it("does not mention truncation in the synthesis prompt when nothing was dropped", async () => {
+    const generate = vi
+      .fn()
+      .mockResolvedValueOnce(ok(ONE_SUBTASK_JSON))
+      .mockResolvedValueOnce(ok("done"))
+      .mockResolvedValueOnce(ok('{"approved": true}'))
+      .mockResolvedValueOnce(ok("synthesis text"));
+    const p = makeStrategy("p", { generate });
+    const registry = new LlmRegistry({ strategies: [p], platform: "p" });
+    const orchestrator = new Orchestrator({ registry });
+
+    await orchestrator.run("task", { synthesize: true });
+
+    const synthesisPrompt = generate.mock.calls[3]![0].prompt as string;
+    expect(synthesisPrompt).not.toContain("never attempted");
+    expect(synthesisPrompt).not.toContain("maxSubtasks");
   });
 
   it("notes unresolved and errored subtasks explicitly in the synthesis prompt", async () => {

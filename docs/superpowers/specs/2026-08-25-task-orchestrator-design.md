@@ -404,6 +404,21 @@ actually supports, same as Grok's image-only restriction today.
   implementation time per provider's actual documented strengths, not
   architectural.
 
+With all five built-in strategies registered together, the implemented tag
+sets overlap enough that most subtasks carrying a single-tag
+`requiredCapabilities` tie on capability-overlap score — several providers
+share each tag — so the rule stage can't pick a unique winner and routing
+falls through to the LLM-fallback stage. That is accepted v1 behavior, not
+a defect: §7's rule stage is a cheap shortcut, and the fallback stage is
+the designed answer for exactly this "tags don't decide it" case, so the
+outcome is still correct, just one classifier call more expensive than the
+best case. Differentiating the built-in tag sets so they discriminate more
+often, and/or nudging the decompose prompt toward emitting multi-tag
+`requiredCapabilities` (where overlap scores separate naturally), is
+deferred to future work alongside the items above — both are tuning passes
+that want real usage data on which subtask shapes actually show up, not
+architectural changes.
+
 ## Appendix: L99 review summary
 
 An architectural review (senior-architect deep-analysis pass) surfaced
