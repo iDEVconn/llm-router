@@ -182,4 +182,9 @@ describe("ClaudeStrategy", () => {
       /platform API key is not configured/,
     );
   });
+
+  it("declares its capability tags", () => {
+    const strategy = new ClaudeStrategy({ apiKey: "k" });
+    expect(strategy.capabilities).toEqual(["code", "reasoning", "long-context"]);
+  });
 });

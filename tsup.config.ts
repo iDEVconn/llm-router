@@ -6,6 +6,8 @@ export default defineConfig({
     gemini: "src/gemini/index.ts",
     claude: "src/claude/index.ts",
     grok: "src/grok/index.ts",
+    chatgpt: "src/chatgpt/index.ts",
+    deepseek: "src/deepseek/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,

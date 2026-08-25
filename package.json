@@ -1,7 +1,7 @@
 {
   "name": "@idevconn/llm-router",
-  "version": "0.6.0",
-  "description": "Library-agnostic LLM router: provider-neutral strategy interface + registry with env-driven platform selection and BYOK support. Opt-in adapters for Gemini, Claude, and Grok via subpath exports.",
+  "version": "0.7.0",
+  "description": "Library-agnostic LLM router: provider-neutral strategy interface + registry with env-driven platform selection and BYOK support. Opt-in adapters for Gemini, Claude, Grok, ChatGPT, and DeepSeek via subpath exports.",
   "license": "Apache-2.0",
   "author": "iDEVconn",
   "repository": {
@@ -19,6 +19,8 @@
     "gemini",
     "claude",
     "grok",
+    "chatgpt",
+    "deepseek",
     "byok",
     "strategy"
   ],
@@ -46,6 +48,16 @@
       "types": "./dist/grok.d.ts",
       "import": "./dist/grok.js",
       "require": "./dist/grok.cjs"
+    },
+    "./chatgpt": {
+      "types": "./dist/chatgpt.d.ts",
+      "import": "./dist/chatgpt.js",
+      "require": "./dist/chatgpt.cjs"
+    },
+    "./deepseek": {
+      "types": "./dist/deepseek.d.ts",
+      "import": "./dist/deepseek.js",
+      "require": "./dist/deepseek.cjs"
     }
   },
   "files": [

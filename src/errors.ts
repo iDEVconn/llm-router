@@ -7,6 +7,8 @@
  *   - `InvalidPlatformProviderError` → throw at boot (config error)
  *   - `LlmKeyValidationError`        → 400 / 401 depending on caller intent
  *   - `UnsupportedAttachmentError`   → 400
+ *   - `TaskDecompositionError`       → 502 (upstream model didn't cooperate)
+ *   - `NoAvailableProviderError`     → 400 (no BYOK/platform key for the routed provider)
  */
 
 export class UnknownProviderError extends Error {
@@ -58,5 +60,20 @@ export class UnsupportedAttachmentError extends Error {
       `${providerName} does not accept "${mimetype}".${hint ? ` ${hint}` : ""}`,
     );
     this.name = "UnsupportedAttachmentError";
+  }
+}
+
+export class TaskDecompositionError extends Error {
+  constructor(public override readonly cause: unknown) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    super(`Failed to decompose the task into subtasks: ${causeMessage}`);
+    this.name = "TaskDecompositionError";
+  }
+}
+
+export class NoAvailableProviderError extends Error {
+  constructor(public readonly subtaskId: string) {
+    super(`No available provider (platform key or BYOK) can handle subtask "${subtaskId}".`);
+    this.name = "NoAvailableProviderError";
   }
 }
