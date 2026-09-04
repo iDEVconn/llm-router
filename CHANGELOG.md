@@ -1,5 +1,11 @@
 # @idevconn/llm-router
 
+## 0.8.0
+
+### Minor Changes
+
+- cbe2187: `GeminiStrategy` accepts `connection: "vertex"` to run platform-funded calls through Vertex AI with Application Default Credentials, using `@google/genai`. Per-call BYOK still routes through the direct Gemini API. No automatic failover.
+
 ## Unreleased
 
 ### Minor Changes
