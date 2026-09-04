@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockGenerateContent = vi.fn();
 const mockCountTokens = vi.fn();
 const mockGetGenerativeModel = vi.fn();
+const mockVertexGenerateContent = vi.fn();
+const mockGoogleGenAI = vi.fn();
 
 vi.mock("@google/generative-ai", () => {
   class GoogleGenerativeAI {
@@ -13,6 +15,16 @@ vi.mock("@google/generative-ai", () => {
     }
   }
   return { GoogleGenerativeAI };
+});
+
+vi.mock("@google/genai", () => {
+  class GoogleGenAI {
+    constructor(opts: Record<string, unknown>) {
+      mockGoogleGenAI(opts);
+    }
+    models = { generateContent: mockVertexGenerateContent };
+  }
+  return { GoogleGenAI };
 });
 
 import { LlmKeyValidationError } from "../errors";
@@ -190,5 +202,54 @@ describe("GeminiStrategy", () => {
   it("declares its capability tags", () => {
     const strategy = new GeminiStrategy({ apiKey: "k" });
     expect(strategy.capabilities).toEqual(["vision", "long-context", "multilingual", "cheap"]);
+  });
+
+  describe("connection=vertex", () => {
+    it("creates GoogleGenAI with vertexai:true and does not use GEMINI_API_KEY", async () => {
+      process.env.GEMINI_API_KEY = "must-not-be-used";
+      mockVertexGenerateContent.mockResolvedValueOnce({
+        text: "vertex-ok",
+        usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3 },
+      });
+      const strategy = new GeminiStrategy({
+        connection: "vertex",
+        apiKey: "platform-key-ignored-for-platform-calls",
+      });
+
+      const result = await strategy.generate({ prompt: "parse" });
+
+      expect(mockGoogleGenAI).toHaveBeenCalledWith({ vertexai: true });
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        text: "vertex-ok",
+        model: "gemini-2.5-flash-lite",
+        usage: { inputTokens: 2, outputTokens: 3 },
+      });
+      delete process.env.GEMINI_API_KEY;
+    });
+
+    it("keeps providerName=gemini and treats ADC as a configured platform", () => {
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+      expect(strategy.providerName).toBe("gemini");
+      expect(strategy.hasPlatformKey()).toBe(true);
+    });
+
+    it("still uses the direct Gemini API for personal BYOK", async () => {
+      mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "byok" } });
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      await strategy.generate({ prompt: "x", apiKey: "user-key" });
+
+      expect(mockGenerateContent).toHaveBeenCalledOnce();
+      expect(mockVertexGenerateContent).not.toHaveBeenCalled();
+    });
+
+    it("rethrows Vertex errors without falling back to the API-key client", async () => {
+      mockVertexGenerateContent.mockRejectedValueOnce(new Error("vertex 403"));
+      const strategy = new GeminiStrategy({ connection: "vertex", apiKey: "k" });
+
+      await expect(strategy.generate({ prompt: "x" })).rejects.toThrow("vertex 403");
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+    });
   });
 });

@@ -1,5 +1,11 @@
 # @idevconn/llm-router
 
+## Unreleased
+
+### Minor Changes
+
+- `GeminiStrategy` accepts `connection: "vertex"` for platform-funded calls through Vertex AI (ADC, `@google/genai`). `providerName` stays `"gemini"`. Per-call BYOK still uses the direct Gemini API. No automatic failover.
+
 ## 0.7.0
 
 ### Minor Changes

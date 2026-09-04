@@ -16,7 +16,8 @@ Library-agnostic LLM router. Provider-neutral `LlmStrategy` interface + `LlmRegi
 npm install @idevconn/llm-router
 
 # Then install only the SDKs for the providers you use:
-npm install @google/generative-ai   # for Gemini
+npm install @google/generative-ai   # for Gemini (direct API / BYOK)
+npm install @google/genai           # optional; only for GeminiStrategy({ connection: "vertex" })
 npm install @anthropic-ai/sdk       # for Claude
 npm install openai                  # for Grok, ChatGPT, and DeepSeek (all OpenAI-compatible)
 ```
@@ -31,7 +32,11 @@ import { GrokStrategy } from "@idevconn/llm-router/grok";
 
 const registry = new LlmRegistry<"gemini" | "claude" | "grok">({
   strategies: [
-    new GeminiStrategy({ apiKey: process.env.GEMINI_API_KEY, defaultModel: process.env.GEMINI_MODEL }),
+    new GeminiStrategy({
+      apiKey: process.env.GEMINI_API_KEY,
+      defaultModel: process.env.GEMINI_MODEL,
+      // connection: "vertex" → Vertex AI via ADC; BYOK still uses the API key
+    }),
     new ClaudeStrategy({ apiKey: process.env.CLAUDE_API_KEY, defaultModel: process.env.CLAUDE_MODEL }),
     new GrokStrategy({ apiKey: process.env.XAI_API_KEY, defaultModel: process.env.GROK_MODEL }),
   ],

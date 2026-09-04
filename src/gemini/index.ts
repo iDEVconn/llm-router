@@ -12,11 +12,19 @@ interface GeminiUsageMetadata {
   candidatesTokenCount?: number;
 }
 
+export type GeminiConnection = "gemini" | "vertex";
+
 export interface GeminiStrategyOptions {
   /** Platform API key (used when caller doesn't pass `apiKey` per-call). */
   apiKey?: string;
   /** Default model when caller doesn't pass `model` per-call. */
   defaultModel?: string;
+  /**
+   * How platform-funded calls connect. `"vertex"` uses Vertex AI + ADC
+   * (`GoogleGenAI({ vertexai: true })`) and does not require `apiKey`.
+   * Per-call BYOK (`opts.apiKey`) always uses the direct Gemini API.
+   */
+  connection?: GeminiConnection;
 }
 
 const FALLBACK_DEFAULT_MODEL = "gemini-2.5-flash-lite";
@@ -38,10 +46,12 @@ export class GeminiStrategy implements LlmStrategy {
   readonly defaultModel: string;
   private platformClient: GoogleGenerativeAI | null = null;
   private readonly platformApiKey: string | undefined;
+  private readonly connection: GeminiConnection;
 
   constructor(opts: GeminiStrategyOptions = {}) {
     this.platformApiKey = opts.apiKey?.trim() || undefined;
     this.defaultModel = opts.defaultModel?.trim() || FALLBACK_DEFAULT_MODEL;
+    this.connection = opts.connection === "vertex" ? "vertex" : "gemini";
   }
 
   private getPlatformClient(): GoogleGenerativeAI {
@@ -57,8 +67,12 @@ export class GeminiStrategy implements LlmStrategy {
   }
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
-    const client = opts.apiKey ? new GoogleGenerativeAI(opts.apiKey) : this.getPlatformClient();
     const modelName = opts.model?.trim() || this.defaultModel;
+    if (!opts.apiKey && this.connection === "vertex") {
+      return this.generateViaVertex(opts, modelName);
+    }
+
+    const client = opts.apiKey ? new GoogleGenerativeAI(opts.apiKey) : this.getPlatformClient();
     // `systemInstruction` correctly separates stable instructions from the
     // per-call prompt — note this is NOT Gemini's Cached Content API (which
     // needs a separate create/lifecycle/TTL flow and a much higher minimum
@@ -117,9 +131,55 @@ export class GeminiStrategy implements LlmStrategy {
     }
   }
 
-  // For tests + callers that want to know whether a platform key is wired.
+  private async generateViaVertex(
+    opts: LlmGenerateOptions,
+    modelName: string,
+  ): Promise<LlmResponse> {
+    const { GoogleGenAI } = await import("@google/genai");
+    const project = process.env.GOOGLE_CLOUD_PROJECT?.trim() || undefined;
+    const location = process.env.GOOGLE_CLOUD_LOCATION?.trim() || undefined;
+    const client = new GoogleGenAI({
+      vertexai: true,
+      ...(project ? { project } : {}),
+      ...(location ? { location } : {}),
+    });
+
+    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
+      { text: opts.prompt },
+    ];
+    for (const attachment of opts.attachments ?? []) {
+      parts.push({
+        inlineData: { mimeType: attachment.mimetype, data: toBase64(attachment.data) },
+      });
+    }
+
+    const result = await client.models.generateContent({
+      model: modelName,
+      contents: [{ role: "user", parts }],
+      ...(opts.systemPrompt ? { config: { systemInstruction: opts.systemPrompt } } : {}),
+    });
+
+    const usage = (
+      result as { usageMetadata?: GeminiUsageMetadata }
+    ).usageMetadata;
+    const finishReason = (
+      result as { candidates?: Array<{ finishReason?: string }> }
+    ).candidates?.[0]?.finishReason;
+
+    return {
+      text: typeof result.text === "string" ? result.text : "",
+      model: modelName,
+      usage: {
+        inputTokens: usage?.promptTokenCount ?? 0,
+        outputTokens: usage?.candidatesTokenCount ?? 0,
+      },
+      truncated: finishReason === "MAX_TOKENS",
+    };
+  }
+
+  // Vertex authenticates via ADC, so a missing Gemini API key is not "unwired".
   hasPlatformKey(): boolean {
-    return this.platformApiKey !== undefined;
+    return this.connection === "vertex" || this.platformApiKey !== undefined;
   }
 }
 
