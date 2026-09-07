@@ -1,5 +1,16 @@
 # @idevconn/llm-router
 
+## 0.9.0
+
+### Minor Changes
+
+- 38c46a9: Add cost control: `calculateCost(usage, provider, model, pricing)` in `src/pricing.ts` computes cost from a caller-supplied `PricingTable` (prices are not baked in, since they drift independently of this package), and `withBudget(strategy, opts)` in `src/budget.ts` wraps any `LlmStrategy` to track spend across calls, throwing the new `BudgetExceededError` when `maxCostPerCall` is exceeded by a call's actual cost, or when `maxCostTotal` has already been reached before the next call starts. `opts.onCost` fires with `{ provider, model, cost, usage }` after each successful call.
+- 38c46a9: Add `withInstrumentation(strategy, { onCall })` in `src/instrumentation.ts`, a decorator that wraps any `LlmStrategy` and emits an `LlmCallEvent` (`{ provider, model, usage, truncated, latencyMs, timestamp, error? }`) on both success and failure, without imposing a specific logger — the caller's `onCall` decides where events go. Also adds `compose(strategy, ...decorators)` so `withBudget` and `withInstrumentation` (or any other `LlmStrategy` decorator) can be chained without manual nesting: `compose(s, a, b)` behaves like `b(a(s))`.
+- 38c46a9: Add prompt injection defense in `src/injection-defense.ts`: `sanitizeUntrustedContent(text, opts?)` wraps untrusted text (retrieved documents, tool output, ...) in explicit delimiters and a data-only instruction before it's embedded in a prompt, and `detectPromptInjection(text)` is a cheap, synchronous regex/keyword gate that flags common injection phrasing ("ignore previous instructions", role reassignment, fake `system:` prefixes, premature closing of a delimited block) before any generation call is made. For a probabilistic second opinion, `detectPromptInjectionWithModel(text, strategy)` runs the same check through an `LlmStrategy` — deliberately separate and opt-in, since it costs a model call and can't be part of the cheap pre-generation gate.
+- 38c46a9: Add RAG support. `EmbeddingStrategy` (`src/embeddings/types.ts`) mirrors `LlmStrategy` for embeddings providers, and `VectorStore` (`src/embeddings/vector-store.ts`) is a provider-neutral upsert/query/delete interface. `Retriever` (`src/rag.ts`) ties them together: `retrieve(query, opts?)` embeds the query, queries the store, and returns `{ chunks, sources }` — every chunk is run through `sanitizeUntrustedContent` before it's returned, since retrieved content is a classic prompt-injection vector and this is not optional.
+  
+  Ships one concrete adapter, `PgVectorStore`, via the new `@idevconn/llm-router/embeddings/pgvector` subpath export (same optional-peer-dependency pattern as the LLM adapters — declare `pg` yourself). It covers Postgres directly and Supabase in one shot, since Supabase is Postgres with pgvector built in; Mongo Atlas Vector Search and Vertex AI-backed stores need their own adapters later. It expects a table with `id text primary key`, `embedding vector(n)`, and `metadata jsonb` columns and never runs DDL. Filter keys are validated against a simple-identifier pattern before being interpolated into SQL (values are always parametrized) to prevent injection through metadata filter keys.
+
 ## 0.8.0
 
 ### Minor Changes
