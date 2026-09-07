@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { NoAvailableProviderError, TaskDecompositionError } from "../errors";
+import { BudgetExceededError, NoAvailableProviderError, TaskDecompositionError } from "../errors";
 
 describe("TaskDecompositionError", () => {
   it("wraps an Error cause with its message", () => {
@@ -23,5 +23,23 @@ describe("NoAvailableProviderError", () => {
     expect(err.name).toBe("NoAvailableProviderError");
     expect(err.subtaskId).toBe("subtask-2");
     expect(err.message).toMatch(/subtask-2/);
+  });
+});
+
+describe("BudgetExceededError", () => {
+  it("reports the per-call limit and the offending cost", () => {
+    const err = new BudgetExceededError("perCall", 2.5, 1);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("BudgetExceededError");
+    expect(err.kind).toBe("perCall");
+    expect(err.cost).toBe(2.5);
+    expect(err.limit).toBe(1);
+    expect(err.message).toMatch(/2\.5/);
+  });
+
+  it("reports the accumulated total limit", () => {
+    const err = new BudgetExceededError("total", 10, 10);
+    expect(err.kind).toBe("total");
+    expect(err.message).toMatch(/10/);
   });
 });

@@ -1,5 +1,6 @@
 export { LlmRegistry } from "./registry";
 export {
+  BudgetExceededError,
   InvalidPlatformProviderError,
   LlmKeyValidationError,
   NoAvailableProviderError,
@@ -28,3 +29,26 @@ export type {
 } from "./task-router";
 export { Orchestrator } from "./orchestrator";
 export type { OrchestratorResult, RunOptions, SubtaskResult } from "./orchestrator";
+export { calculateCost } from "./pricing";
+export type { PricingTable } from "./pricing";
+export { withBudget } from "./budget";
+export type { WithBudgetOptions } from "./budget";
+export { compose, withInstrumentation } from "./instrumentation";
+export type { LlmCallEvent, WithInstrumentationOptions } from "./instrumentation";
+export {
+  detectPromptInjection,
+  detectPromptInjectionWithModel,
+  sanitizeUntrustedContent,
+} from "./injection-defense";
+export type {
+  PromptInjectionDetection,
+  SanitizeUntrustedContentOptions,
+} from "./injection-defense";
+export type { EmbeddingStrategy } from "./embeddings/types";
+export type {
+  VectorStore,
+  VectorStoreEntry,
+  VectorStoreMatch,
+} from "./embeddings/vector-store";
+export { Retriever } from "./rag";
+export type { RetrieveOptions, RetrieveResult, RetrieverOptions } from "./rag";

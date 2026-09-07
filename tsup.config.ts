@@ -8,11 +8,12 @@ export default defineConfig({
     grok: "src/grok/index.ts",
     chatgpt: "src/chatgpt/index.ts",
     deepseek: "src/deepseek/index.ts",
+    "embeddings/pgvector": "src/embeddings/pgvector/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
   sourcemap: true,
   clean: true,
   target: "es2022",
-  external: ["@google/generative-ai", "@google/genai", "@anthropic-ai/sdk", "openai"],
+  external: ["@google/generative-ai", "@google/genai", "@anthropic-ai/sdk", "openai", "pg"],
 });
