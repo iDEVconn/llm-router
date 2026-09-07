@@ -7,7 +7,9 @@ import {
   TaskDecompositionError,
   TaskRouter,
   calculateCost,
+  compose,
   withBudget,
+  withInstrumentation,
 } from "../index";
 
 describe("public exports", () => {
@@ -30,5 +32,10 @@ describe("public exports", () => {
     expect(typeof calculateCost).toBe("function");
     expect(typeof withBudget).toBe("function");
     expect(typeof BudgetExceededError).toBe("function");
+  });
+
+  it("exports the instrumentation surface", () => {
+    expect(typeof withInstrumentation).toBe("function");
+    expect(typeof compose).toBe("function");
   });
 });

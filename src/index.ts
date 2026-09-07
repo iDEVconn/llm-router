@@ -33,3 +33,5 @@ export { calculateCost } from "./pricing";
 export type { PricingTable } from "./pricing";
 export { withBudget } from "./budget";
 export type { WithBudgetOptions } from "./budget";
+export { compose, withInstrumentation } from "./instrumentation";
+export type { LlmCallEvent, WithInstrumentationOptions } from "./instrumentation";
