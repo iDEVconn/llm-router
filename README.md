@@ -12,6 +12,7 @@ Library-agnostic LLM router. Provider-neutral `LlmStrategy` interface + `LlmRegi
 - Cost control: `withBudget` decorator enforces per-call and total spend caps against a caller-supplied pricing table.
 - Instrumentation: `withInstrumentation` decorator emits a call event (usage, latency, truncation, errors) to any logger you choose.
 - Prompt injection defense: `sanitizeUntrustedContent` + `detectPromptInjection` (cheap heuristic gate) + `detectPromptInjectionWithModel` (opt-in LLM-based second opinion).
+- RAG: `Retriever` + `EmbeddingStrategy`/`VectorStore` interfaces, with a `pgvector`-backed `VectorStore` adapter via a subpath export.
 
 ## Install
 
@@ -23,6 +24,7 @@ npm install @google/generative-ai   # for Gemini (direct API / BYOK)
 npm install @google/genai           # optional; only for GeminiStrategy({ connection: "vertex" })
 npm install @anthropic-ai/sdk       # for Claude
 npm install openai                  # for Grok, ChatGPT, and DeepSeek (all OpenAI-compatible)
+npm install pg                      # for the pgvector VectorStore adapter
 ```
 
 ## Quick start
@@ -205,6 +207,30 @@ const prompt = `Answer using this context:\n${sanitizeUntrustedContent(retrieved
 For a probabilistic second opinion, `detectPromptInjectionWithModel(text, strategy)`
 runs the same check through an `LlmStrategy` — deliberately separate and
 opt-in, since it costs a model call.
+
+## RAG
+
+`EmbeddingStrategy` mirrors `LlmStrategy` for embeddings providers, and
+`VectorStore` is a provider-neutral upsert/query/delete interface. `Retriever`
+ties them together and always runs retrieved chunks through
+`sanitizeUntrustedContent` before returning them:
+
+```ts
+import { Retriever } from "@idevconn/llm-router";
+import { PgVectorStore } from "@idevconn/llm-router/embeddings/pgvector";
+import { Pool } from "pg";
+
+const vectorStore = new PgVectorStore({ pool: new Pool() });
+const retriever = new Retriever({ embeddingStrategy, vectorStore });
+
+const { chunks, sources } = await retriever.retrieve("What's our refund policy?", { topK: 5 });
+const prompt = `Context:\n${chunks.join("\n\n")}\n\nQuestion: ...`;
+```
+
+`PgVectorStore` (subpath export, optional `pg` peer dependency) expects a
+table with `id text primary key`, `embedding vector(n)`, and `metadata jsonb`
+columns — create the table and its pgvector index yourself; the adapter never
+runs DDL.
 
 ## Error mapping
 

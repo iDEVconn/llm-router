@@ -8,6 +8,7 @@ import {
   TaskRouter,
   calculateCost,
   compose,
+  Retriever,
   detectPromptInjection,
   detectPromptInjectionWithModel,
   sanitizeUntrustedContent,
@@ -46,5 +47,9 @@ describe("public exports", () => {
     expect(typeof sanitizeUntrustedContent).toBe("function");
     expect(typeof detectPromptInjection).toBe("function");
     expect(typeof detectPromptInjectionWithModel).toBe("function");
+  });
+
+  it("exports the RAG surface", () => {
+    expect(typeof Retriever).toBe("function");
   });
 });

@@ -44,3 +44,11 @@ export type {
   PromptInjectionDetection,
   SanitizeUntrustedContentOptions,
 } from "./injection-defense";
+export type { EmbeddingStrategy } from "./embeddings/types";
+export type {
+  VectorStore,
+  VectorStoreEntry,
+  VectorStoreMatch,
+} from "./embeddings/vector-store";
+export { Retriever } from "./rag";
+export type { RetrieveOptions, RetrieveResult, RetrieverOptions } from "./rag";
