@@ -35,3 +35,12 @@ export { withBudget } from "./budget";
 export type { WithBudgetOptions } from "./budget";
 export { compose, withInstrumentation } from "./instrumentation";
 export type { LlmCallEvent, WithInstrumentationOptions } from "./instrumentation";
+export {
+  detectPromptInjection,
+  detectPromptInjectionWithModel,
+  sanitizeUntrustedContent,
+} from "./injection-defense";
+export type {
+  PromptInjectionDetection,
+  SanitizeUntrustedContentOptions,
+} from "./injection-defense";
