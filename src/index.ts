@@ -1,5 +1,6 @@
 export { LlmRegistry } from "./registry";
 export {
+  BudgetExceededError,
   InvalidPlatformProviderError,
   LlmKeyValidationError,
   NoAvailableProviderError,
@@ -28,3 +29,7 @@ export type {
 } from "./task-router";
 export { Orchestrator } from "./orchestrator";
 export type { OrchestratorResult, RunOptions, SubtaskResult } from "./orchestrator";
+export { calculateCost } from "./pricing";
+export type { PricingTable } from "./pricing";
+export { withBudget } from "./budget";
+export type { WithBudgetOptions } from "./budget";

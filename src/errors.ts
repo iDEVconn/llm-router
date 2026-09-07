@@ -9,6 +9,7 @@
  *   - `UnsupportedAttachmentError`   → 400
  *   - `TaskDecompositionError`       → 502 (upstream model didn't cooperate)
  *   - `NoAvailableProviderError`     → 400 (no BYOK/platform key for the routed provider)
+ *   - `BudgetExceededError`         → 402 (cost budget exhausted)
  */
 
 export class UnknownProviderError extends Error {
@@ -75,5 +76,20 @@ export class NoAvailableProviderError extends Error {
   constructor(public readonly subtaskId: string) {
     super(`No available provider (platform key or BYOK) can handle subtask "${subtaskId}".`);
     this.name = "NoAvailableProviderError";
+  }
+}
+
+export class BudgetExceededError extends Error {
+  constructor(
+    public readonly kind: "perCall" | "total",
+    public readonly cost: number,
+    public readonly limit: number,
+  ) {
+    super(
+      kind === "perCall"
+        ? `Call cost ${cost} exceeds maxCostPerCall ${limit}.`
+        : `Accumulated cost ${cost} has reached maxCostTotal ${limit}; refusing further calls.`,
+    );
+    this.name = "BudgetExceededError";
   }
 }

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  BudgetExceededError,
   KNOWN_CAPABILITY_TAGS,
   NoAvailableProviderError,
   Orchestrator,
   TaskDecompositionError,
   TaskRouter,
+  calculateCost,
+  withBudget,
 } from "../index";
 
 describe("public exports", () => {
@@ -21,5 +24,11 @@ describe("public exports", () => {
       "reasoning",
       "multilingual",
     ]);
+  });
+
+  it("exports the cost-control surface", () => {
+    expect(typeof calculateCost).toBe("function");
+    expect(typeof withBudget).toBe("function");
+    expect(typeof BudgetExceededError).toBe("function");
   });
 });
