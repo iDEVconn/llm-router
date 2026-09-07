@@ -8,7 +8,10 @@ Library-agnostic LLM router. Provider-neutral `LlmStrategy` interface + `LlmRegi
 - Subpath adapters: `@idevconn/llm-router/gemini`, `/claude`, `/grok`, `/chatgpt`, `/deepseek`. Each declares its SDK as an **optional** peer dependency, so consumers install only what they need.
 - BYOK first-class: every strategy accepts a per-call `apiKey` that overrides the platform key for that one request.
 - Platform-fallback fully optional: pass `platform: null` to `LlmRegistry` to require BYOK from every caller — useful for SaaS that doesn't subsidize AI usage.
-- Typed errors: `UnknownProviderError`, `NoPlatformProviderError`, `InvalidPlatformProviderError`, `LlmKeyValidationError`, `UnsupportedAttachmentError`, `TaskDecompositionError`, `NoAvailableProviderError`. No framework-specific exceptions.
+- Typed errors: `UnknownProviderError`, `NoPlatformProviderError`, `InvalidPlatformProviderError`, `LlmKeyValidationError`, `UnsupportedAttachmentError`, `TaskDecompositionError`, `NoAvailableProviderError`, `BudgetExceededError`. No framework-specific exceptions.
+- Cost control: `withBudget` decorator enforces per-call and total spend caps against a caller-supplied pricing table.
+- Instrumentation: `withInstrumentation` decorator emits a call event (usage, latency, truncation, errors) to any logger you choose.
+- Prompt injection defense: `sanitizeUntrustedContent` + `detectPromptInjection` (cheap heuristic gate) + `detectPromptInjectionWithModel` (opt-in LLM-based second opinion).
 
 ## Install
 
@@ -135,6 +138,74 @@ subtask's failure never aborts the run — see the
 [task-orchestrator design doc](https://github.com/iDEVconn/llm-router/blob/main/docs/superpowers/specs/2026-08-25-task-orchestrator-design.md)
 for the full design.
 
+## Cost control
+
+`calculateCost` turns `LlmResponse.usage` into a dollar figure using a pricing
+table you own and pass in (prices drift independently of this package's
+release cycle, so nothing is hardcoded). `withBudget` wraps any `LlmStrategy`
+to enforce spend limits across calls:
+
+```ts
+import { withBudget, type PricingTable } from "@idevconn/llm-router";
+
+const pricing: PricingTable = {
+  gemini: { "gemini-2.5-flash": { inputPer1M: 0.3, outputPer1M: 2.5 } },
+};
+
+const budgeted = withBudget(strategy, {
+  pricing,
+  maxCostPerCall: 0.5,
+  maxCostTotal: 20,
+  onCost: ({ provider, model, cost }) => console.log(provider, model, cost),
+});
+```
+
+Cost is only known after a call returns (token counts come from the
+response), so `maxCostPerCall` is checked against the call that just
+finished, while `maxCostTotal` is checked up front against the accumulated
+total before the next call is allowed to start. Either limit being exceeded
+throws `BudgetExceededError`.
+
+## Instrumentation
+
+`withInstrumentation` wraps any `LlmStrategy` and emits an `LlmCallEvent` on
+both success and failure — no bundled logger, you decide where events go:
+
+```ts
+import { compose, withBudget, withInstrumentation } from "@idevconn/llm-router";
+
+const instrumented = compose(
+  strategy,
+  (s) => withBudget(s, { pricing }),
+  (s) => withInstrumentation(s, { onCall: (event) => logger.info(event) }),
+);
+```
+
+`compose(s, a, b)` behaves like `b(a(s))`, so decorators chain without manual
+nesting.
+
+## Prompt injection defense
+
+Retrieved documents, tool output, and other untrusted text embedded in a
+prompt are a classic injection vector. `sanitizeUntrustedContent` wraps such
+text in explicit delimiters plus a data-only instruction; `detectPromptInjection`
+is a cheap synchronous heuristic gate meant to run before generation:
+
+```ts
+import { detectPromptInjection, sanitizeUntrustedContent } from "@idevconn/llm-router";
+
+const { suspicious, reasons } = detectPromptInjection(userSuppliedText);
+if (suspicious) {
+  // log, reject, or route to stricter handling — reasons explains why
+}
+
+const prompt = `Answer using this context:\n${sanitizeUntrustedContent(retrievedDoc)}`;
+```
+
+For a probabilistic second opinion, `detectPromptInjectionWithModel(text, strategy)`
+runs the same check through an `LlmStrategy` — deliberately separate and
+opt-in, since it costs a model call.
+
 ## Error mapping
 
 The pkg throws plain `Error` subclasses so it stays framework-agnostic. Wrap at the controller boundary:
@@ -148,6 +219,7 @@ try {
   if (err instanceof NoPlatformProviderError) throw new BadRequestException(err.message);
   if (err instanceof LlmKeyValidationError) throw new BadRequestException(err.message);
   if (err instanceof UnsupportedAttachmentError) throw new BadRequestException(err.message);
+  if (err instanceof BudgetExceededError) throw new HttpException(err.message, 402);
   throw err;
 }
 ```
