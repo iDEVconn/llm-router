@@ -8,17 +8,39 @@ export interface LlmAttachment {
   mimetype: string;
 }
 
+/** One turn of multi-turn conversation history. See `LlmGenerateOptions.messages`. */
+export interface LlmMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 /** Per-call options. */
 export interface LlmGenerateOptions {
-  prompt: string;
+  /**
+   * Single-turn prompt text. Mutually exclusive with `messages` — for
+   * multi-turn conversation history, use `messages` instead. Exactly one
+   * of `prompt` / `messages` must be set; both or neither throws
+   * `InvalidGenerateOptionsError`.
+   */
+  prompt?: string;
+  /**
+   * Full multi-turn conversation history. When provided, this replaces
+   * `prompt` as the content sent to the provider — exactly one of
+   * `prompt` / `messages` must be set, never both, never neither
+   * (`InvalidGenerateOptionsError` otherwise). Roles must alternate
+   * starting with "user" (provider-enforced, not validated here).
+   * `attachments` apply only to the final turn.
+   */
+  messages?: LlmMessage[];
   /**
    * Stable instructions shared across many calls (e.g. a system/role
-   * prompt). Kept separate from `prompt` so strategies that support
-   * prompt caching (currently Claude, via `cache_control`) can cache it
-   * independently of the per-call dynamic content, cutting the cost of
-   * repeated calls that reuse the same instructions. Strategies without
-   * caching support still use it correctly (as a system-role message or
-   * `systemInstruction`) — they just don't get the cost benefit.
+   * prompt). Kept separate from `prompt`/`messages` so strategies that
+   * support prompt caching (currently Claude, via `cache_control`) can
+   * cache it independently of the per-call dynamic content, cutting the
+   * cost of repeated calls that reuse the same instructions. Strategies
+   * without caching support still use it correctly (as a system-role
+   * message or `systemInstruction`) — they just don't get the cost
+   * benefit.
    */
   systemPrompt?: string;
   attachments?: LlmAttachment[];
