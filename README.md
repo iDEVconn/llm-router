@@ -75,6 +75,42 @@ const byok = await strategy.generate({
 await strategy.validateKey(user.claudeApiKey, user.preferredModel);
 ```
 
+## Multi-turn conversation history
+
+`LlmGenerateOptions.prompt` is now optional. Pass `messages: LlmMessage[]`
+instead for multi-turn conversation history:
+
+```ts
+interface LlmMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+```
+
+Exactly one of `prompt` / `messages` must be set — both, or neither,
+throws `InvalidGenerateOptionsError` before any network call. When
+`messages` is used, `attachments` apply only to the **last** turn (same
+place they'd land if you were building that turn as a single-turn
+`prompt` call). All 5 built-in strategies (Claude, Gemini, ChatGPT, Grok,
+DeepSeek) implement `messages` natively — none of them throw
+`UnsupportedMultiTurnError` (that error exists for custom third-party
+strategies that choose not to support it).
+
+Gemini maps roles to its own vocabulary: `"assistant"` → `"model"`,
+`"user"` → `"user"` — an implementation detail only relevant if you're
+reading or extending `GeminiStrategy` directly; callers use the same
+`LlmMessage.role` values (`"user"`/`"assistant"`) for every provider.
+
+```ts
+const result = await strategy.generate({
+  messages: [
+    { role: "user", content: "What's the capital of France?" },
+    { role: "assistant", content: "Paris." },
+    { role: "user", content: "And its population?" },
+  ],
+});
+```
+
 ## Streaming and reasoning/thinking
 
 `LlmGenerateOptions` has three additive fields. A strategy that doesn't
@@ -106,13 +142,13 @@ running it through `sanitizeUntrustedContent`/`detectPromptInjection` first.
 
 Per-provider support (check `strategy.capabilities` for `'streaming'`/`'thinking'`):
 
-| Provider | Streaming | Thinking |
-|---|---|---|
-| Claude | ✅ `messages.stream()` | `adaptive`, `budget` (`budget_tokens` ≥1024 and < `maxTokens`). `effort` unsupported. |
-| Gemini | ✅ both connection modes | **Vertex only** (`GeminiStrategy({ connection: "vertex" })`) — `adaptive`, `budget`. The direct API SDK has no thinking support at all; any `thinking` request on that connection throws `UnsupportedThinkingModeError`. |
-| ChatGPT | ✅ `stream:true` | `effort` only (`reasoning_effort`). Chat Completions never returns a reasoning trace — `response.thinking` is always `undefined` for this strategy. |
-| Grok | ✅ `stream:true` | **Not implemented.** xAI's reasoning-effort parameter contract could not be verified against primary documentation — any `thinking` request throws `UnsupportedThinkingModeError` until this is confirmed against docs.x.ai. |
-| DeepSeek | ✅ `stream:true` | **Not implemented as a request option**, same reason as Grok. `deepseek-reasoner`'s `reasoning_content` is instead surfaced passively via `response.thinking` whenever the model returns it — inherent to the model, not caller-controlled. |
+| Provider | Streaming | Thinking | Multi-turn |
+|---|---|---|---|
+| Claude | ✅ `messages.stream()` | `adaptive`, `budget` (`budget_tokens` ≥1024 and < `maxTokens`). `effort` unsupported. | ✅ |
+| Gemini | ✅ both connection modes | **Vertex only** (`GeminiStrategy({ connection: "vertex" })`) — `adaptive`, `budget`. The direct API SDK has no thinking support at all; any `thinking` request on that connection throws `UnsupportedThinkingModeError`. | ✅ |
+| ChatGPT | ✅ `stream:true` | `effort` only (`reasoning_effort`). Chat Completions never returns a reasoning trace — `response.thinking` is always `undefined` for this strategy. | ✅ |
+| Grok | ✅ `stream:true` | **Not implemented.** xAI's reasoning-effort parameter contract could not be verified against primary documentation — any `thinking` request throws `UnsupportedThinkingModeError` until this is confirmed against docs.x.ai. | ✅ |
+| DeepSeek | ✅ `stream:true` | **Not implemented as a request option**, same reason as Grok. `deepseek-reasoner`'s `reasoning_content` is instead surfaced passively via `response.thinking` whenever the model returns it — inherent to the model, not caller-controlled. | ✅ |
 
 ```ts
 const stream = await strategy.generate({
