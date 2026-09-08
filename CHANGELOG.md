@@ -1,5 +1,11 @@
 # @idevconn/llm-router
 
+## 0.11.0
+
+### Minor Changes
+
+- dfe2095: Add multi-turn `messages[]` support across all provider adapters (Claude, Gemini, ChatGPT, Grok, DeepSeek); prompt is now optional, InvalidGenerateOptionsError when both/neither of prompt/messages are set.
+
 ## 0.10.0
 
 ### Minor Changes
