@@ -48,7 +48,7 @@ function toBase64(data: string | Buffer): string {
 }
 
 function buildParts(opts: LlmGenerateOptions): GeminiPart[] {
-  const parts: GeminiPart[] = [{ text: opts.prompt }];
+  const parts: GeminiPart[] = [{ text: opts.prompt! }];
   for (const attachment of opts.attachments ?? []) {
     parts.push({
       inlineData: { mimeType: attachment.mimetype, data: toBase64(attachment.data) },
