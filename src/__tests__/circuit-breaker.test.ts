@@ -2,13 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withCircuitBreaker } from "../circuit-breaker";
 import { CircuitBreakerOpenError } from "../errors";
 import { BudgetExceededError } from "../errors";
-import type { LlmStrategy } from "../types";
+import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
 
-function makeStrategy(): LlmStrategy & { generate: ReturnType<typeof vi.fn> } {
+function makeStrategy(): LlmStrategy & {
+  generate: ReturnType<typeof vi.fn<(opts: LlmGenerateOptions) => Promise<LlmResponse>>>;
+} {
   return {
     providerName: "claude",
     defaultModel: "claude-haiku-4-5",
-    generate: vi.fn(),
+    generate: vi.fn<(opts: LlmGenerateOptions) => Promise<LlmResponse>>(),
     validateKey: vi.fn(),
   };
 }
