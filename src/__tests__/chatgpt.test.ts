@@ -16,6 +16,7 @@ vi.mock("openai", () => {
 });
 
 import {
+  InvalidGenerateOptionsError,
   InvalidThinkingConfigError,
   LlmKeyValidationError,
   UnsupportedAttachmentError,
@@ -307,6 +308,90 @@ describe("ChatGptStrategy", () => {
       const result = await strategy.generate({ prompt: "hi" });
 
       expect(result.thinking).toBeUndefined();
+    });
+  });
+
+  describe("messages (multi-turn)", () => {
+    it("builds a multi-turn messages array from 2+ turns", async () => {
+      mockChatCompletionsCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: "ok" } }],
+        model: "gpt-4.1-mini",
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      });
+      const strategy = new ChatGptStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "second" },
+          { role: "user", content: "third" },
+        ],
+      });
+
+      const call = mockChatCompletionsCreate.mock.calls[0]![0];
+      expect(call.messages).toEqual([
+        { role: "user", content: "first" },
+        { role: "assistant", content: "second" },
+        { role: "user", content: "third" },
+      ]);
+    });
+
+    it("prepends the systemPrompt as a leading system message in multi-turn mode too", async () => {
+      mockChatCompletionsCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: "ok" } }],
+        model: "gpt-4.1-mini",
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      });
+      const strategy = new ChatGptStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        messages: [{ role: "user", content: "first" }],
+        systemPrompt: "Be concise.",
+      });
+
+      const call = mockChatCompletionsCreate.mock.calls[0]![0];
+      expect(call.messages[0]).toEqual({ role: "system", content: "Be concise." });
+      expect(call.messages[1]).toEqual({ role: "user", content: "first" });
+    });
+
+    it("puts attachments on the last turn's content array, not the first", async () => {
+      mockChatCompletionsCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: "ok" } }],
+        model: "gpt-4.1-mini",
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      });
+      const strategy = new ChatGptStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "second" },
+          { role: "user", content: "third" },
+        ],
+        attachments: [{ data: Buffer.from("img"), mimetype: "image/jpeg" }],
+      });
+
+      const call = mockChatCompletionsCreate.mock.calls[0]![0];
+      expect(call.messages[0]).toEqual({ role: "user", content: "first" });
+      expect(call.messages[1]).toEqual({ role: "assistant", content: "second" });
+      expect(call.messages[2].role).toBe("user");
+      expect(call.messages[2].content[0].type).toBe("image_url");
+      expect(call.messages[2].content[0].image_url.url).toMatch(/^data:image\/jpeg;base64,/);
+      expect(call.messages[2].content[1]).toEqual({ type: "text", text: "third" });
+    });
+
+    it("throws InvalidGenerateOptionsError when both prompt and messages are set", async () => {
+      const strategy = new ChatGptStrategy({ apiKey: "k" });
+      await expect(
+        strategy.generate({ prompt: "p", messages: [{ role: "user", content: "m" }] }),
+      ).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
+    });
+
+    it("throws InvalidGenerateOptionsError when neither prompt nor messages are set", async () => {
+      const strategy = new ChatGptStrategy({ apiKey: "k" });
+      await expect(strategy.generate({})).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
     });
   });
 });

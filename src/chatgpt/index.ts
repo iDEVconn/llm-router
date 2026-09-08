@@ -5,7 +5,8 @@ import {
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
 } from "../errors";
-import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
+import { assertExactlyOnePromptSource } from "../validate-generate-options";
+import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const FALLBACK_DEFAULT_MODEL = "gpt-4.1-mini";
@@ -87,6 +88,8 @@ export class ChatGptStrategy implements LlmStrategy {
   }
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
+    assertExactlyOnePromptSource(opts);
+
     for (const attachment of opts.attachments ?? []) {
       if (!SUPPORTED_IMAGE_TYPES.has(attachment.mimetype)) {
         throw new UnsupportedAttachmentError(
@@ -105,26 +108,44 @@ export class ChatGptStrategy implements LlmStrategy {
       : this.getPlatformClient();
     const modelName = opts.model?.trim() || this.defaultModel;
 
-    const messageContent: Array<
+    type ChatContentPart =
       | { type: "text"; text: string }
-      | { type: "image_url"; image_url: { url: string; detail: "high" | "low" | "auto" } }
-    > = [];
+      | { type: "image_url"; image_url: { url: string; detail: "high" | "low" | "auto" } };
 
-    for (const attachment of opts.attachments ?? []) {
+    const attachmentParts: ChatContentPart[] = (opts.attachments ?? []).map((attachment) => {
       const data = toBase64(attachment.data);
-      messageContent.push({
+      return {
         type: "image_url",
         image_url: { url: `data:${attachment.mimetype};base64,${data}`, detail: "high" },
+      };
+    });
+
+    type ChatMessage = { role: "system" | "user" | "assistant"; content: string | ChatContentPart[] };
+    const turns: ChatMessage[] = [];
+
+    if (opts.messages) {
+      const history = opts.messages as LlmMessage[];
+      history.forEach((message, index) => {
+        const isLast = index === history.length - 1;
+        if (isLast && attachmentParts.length > 0) {
+          turns.push({
+            role: message.role,
+            content: [...attachmentParts, { type: "text", text: message.content }],
+          });
+        } else {
+          turns.push({ role: message.role, content: message.content });
+        }
+      });
+    } else {
+      turns.push({
+        role: "user",
+        content: [...attachmentParts, { type: "text", text: opts.prompt! }],
       });
     }
-    messageContent.push({ type: "text", text: opts.prompt });
 
     const messages = opts.systemPrompt
-      ? [
-          { role: "system" as const, content: opts.systemPrompt },
-          { role: "user" as const, content: messageContent },
-        ]
-      : [{ role: "user" as const, content: messageContent }];
+      ? [{ role: "system" as const, content: opts.systemPrompt }, ...turns]
+      : turns;
 
     const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
 
