@@ -272,6 +272,29 @@ const instrumented = compose(
 `compose(s, a, b)` behaves like `b(a(s))`, so decorators chain without manual
 nesting.
 
+## Resilience: retry, circuit breaker, rate limiting
+
+Three more `compose()`-able decorators, same shape as `withBudget`/`withInstrumentation`. No new runtime dependency — all three are hand-rolled.
+
+```ts
+import { compose, withCircuitBreaker, withRateLimit, withRetry } from "@idevconn/llm-router";
+
+const resilient = compose(
+  strategy,
+  (s) => withCircuitBreaker(s, { threshold: 5, samplingWindowMs: 60_000, resetTimeoutMs: 30_000 }),
+  (s) => withRateLimit(s, { tokensPerSecond: 10, maxConcurrent: 5 }),
+  (s) => withRetry(s, { maxAttempts: 3, initialBackoffMs: 200, maxBackoffMs: 2_000, multiplier: 2 }),
+);
+```
+
+Put `withRetry` outermost (as above) — each retry attempt then re-enters the rate-limiter and circuit-breaker layers, so an open breaker or an exhausted rate-limit wait fails the whole call fast on the first attempt instead of wasting the remaining retry attempts. Note `withRateLimit` sits between the breaker and the provider in this order, so while the breaker is open, requests still consume limiter capacity before getting the fail-fast `CircuitBreakerOpenError` — that's the deliberate trade-off protecting the breaker's own failure count from being polluted by the limiter's throttling (both `CircuitBreakerOpenError` and `RateLimitExceededError` are excluded from what counts as a circuit-breaker failure, regardless of composition order). `maxWaitMs` on `withRetry` is a per-attempt limit, not a total call deadline — with the example config above, a fully-exhausted call can take up to roughly `maxAttempts` × (backoff + `maxWaitMs`).
+
+- **`withCircuitBreaker`** — after `threshold` failures land inside the rolling `samplingWindowMs`, further calls throw `CircuitBreakerOpenError` immediately (no network call) until `resetTimeoutMs` elapses, then lets exactly one trial call through to test recovery. Caller-fault errors (`InvalidGenerateOptionsError`, `InvalidThinkingConfigError`, `UnsupportedAttachmentError`, `UnsupportedThinkingModeError`, `UnsupportedMultiTurnError`, `BudgetExceededError`) and an intentional `signal` abort never count as a failure.
+- **`withRetry`** — exponential backoff (`initialBackoffMs * multiplier^(attempt-1)`, capped at `maxBackoffMs`, jittered to 0.5-1.0x by default). Never retries a streaming call (`onToken` set) — a mid-stream failure means some tokens already reached the caller, and retrying would re-emit them from the start. Never retries the same caller-fault errors as above, nor `CircuitBreakerOpenError`/`RateLimitExceededError`, nor an aborted `signal`.
+- **`withRateLimit`** — token bucket (`tokensPerSecond`, refilling continuously) plus an optional `maxConcurrent` in-flight cap. A call with no capacity blocks until capacity frees up, up to `maxWaitMs` (default 30s), then throws `RateLimitExceededError`.
+
+All three respect `signal` — an abort during a backoff sleep or a capacity wait stops immediately rather than waiting out the full delay.
+
 ## Prompt injection defense
 
 Retrieved documents, tool output, and other untrusted text embedded in a
@@ -343,6 +366,8 @@ try {
   if (err instanceof UnsupportedThinkingModeError) throw new BadRequestException(err.message);
   if (err instanceof InvalidThinkingConfigError) throw new BadRequestException(err.message);
   if (err instanceof BudgetExceededError) throw new HttpException(err.message, 402);
+  if (err instanceof CircuitBreakerOpenError) throw new HttpException(err.message, 503);
+  if (err instanceof RateLimitExceededError) throw new HttpException(err.message, 429);
   throw err;
 }
 ```

@@ -1,12 +1,14 @@
 export { LlmRegistry } from "./registry";
 export {
   BudgetExceededError,
+  CircuitBreakerOpenError,
   InvalidGenerateOptionsError,
   InvalidPlatformProviderError,
   InvalidThinkingConfigError,
   LlmKeyValidationError,
   NoAvailableProviderError,
   NoPlatformProviderError,
+  RateLimitExceededError,
   TaskDecompositionError,
   UnknownProviderError,
   UnsupportedAttachmentError,
@@ -40,6 +42,12 @@ export { withBudget } from "./budget";
 export type { WithBudgetOptions } from "./budget";
 export { compose, withInstrumentation } from "./instrumentation";
 export type { LlmCallEvent, WithInstrumentationOptions } from "./instrumentation";
+export { withCircuitBreaker } from "./circuit-breaker";
+export type { CircuitBreakerStateChangeEvent, WithCircuitBreakerOptions } from "./circuit-breaker";
+export { withRetry } from "./retry";
+export type { RetryEvent, WithRetryOptions } from "./retry";
+export { withRateLimit } from "./rate-limit";
+export type { ThrottleEvent, WithRateLimitOptions } from "./rate-limit";
 export {
   detectPromptInjection,
   detectPromptInjectionWithModel,

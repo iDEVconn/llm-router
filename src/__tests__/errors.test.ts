@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   BudgetExceededError,
+  CircuitBreakerOpenError,
   InvalidGenerateOptionsError,
   NoAvailableProviderError,
+  RateLimitExceededError,
   TaskDecompositionError,
   UnsupportedMultiTurnError,
 } from "../errors";
@@ -75,5 +77,27 @@ describe("UnsupportedMultiTurnError", () => {
     expect(err.name).toBe("UnsupportedMultiTurnError");
     expect(err.providerName).toBe("acme-llm");
     expect(err.message).toMatch(/acme-llm/);
+  });
+});
+
+describe("CircuitBreakerOpenError", () => {
+  it("names the provider and the retry-after estimate", () => {
+    const err = new CircuitBreakerOpenError("claude", 15_000);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("CircuitBreakerOpenError");
+    expect(err.providerName).toBe("claude");
+    expect(err.retryAfterMs).toBe(15_000);
+    expect(err.message).toMatch(/claude/);
+  });
+});
+
+describe("RateLimitExceededError", () => {
+  it("names the provider and how long it waited", () => {
+    const err = new RateLimitExceededError("gemini", 30_000);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("RateLimitExceededError");
+    expect(err.providerName).toBe("gemini");
+    expect(err.waitedMs).toBe(30_000);
+    expect(err.message).toMatch(/gemini/);
   });
 });
