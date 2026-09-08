@@ -14,6 +14,8 @@
  *   - `InvalidThinkingConfigError`   → 400
  *   - `InvalidGenerateOptionsError`  → 400
  *   - `UnsupportedMultiTurnError`    → 400
+ *   - `CircuitBreakerOpenError`      → 503 (breaker open; provider skipped)
+ *   - `RateLimitExceededError`       → 429
  */
 
 export class UnknownProviderError extends Error {
@@ -132,5 +134,25 @@ export class UnsupportedMultiTurnError extends Error {
       `${providerName} does not support multi-turn \`messages\`. Pass a single-turn \`prompt\` instead, or switch to a provider that supports multi-turn.`,
     );
     this.name = "UnsupportedMultiTurnError";
+  }
+}
+
+export class CircuitBreakerOpenError extends Error {
+  constructor(
+    public readonly providerName: string,
+    public readonly retryAfterMs: number,
+  ) {
+    super(`Circuit breaker for "${providerName}" is open; retry after ~${retryAfterMs}ms.`);
+    this.name = "CircuitBreakerOpenError";
+  }
+}
+
+export class RateLimitExceededError extends Error {
+  constructor(
+    public readonly providerName: string,
+    public readonly waitedMs: number,
+  ) {
+    super(`Rate limit for "${providerName}" exceeded; waited ${waitedMs}ms with no capacity.`);
+    this.name = "RateLimitExceededError";
   }
 }
