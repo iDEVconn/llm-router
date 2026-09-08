@@ -42,16 +42,18 @@ describe("withCircuitBreaker + withRetry composed", () => {
     // with CircuitBreakerOpenError (not the original "provider down"),
     // and only 2 strategy calls happen, not all 5 configured attempts.
     const firstCall = resilient.generate({ prompt: "1" });
+    const firstAssertion = expect(firstCall).rejects.toBeInstanceOf(CircuitBreakerOpenError);
     await vi.runAllTimersAsync();
-    await expect(firstCall).rejects.toBeInstanceOf(CircuitBreakerOpenError);
+    await firstAssertion;
     expect(strategy.generate).toHaveBeenCalledTimes(2);
 
     // Second call: breaker is still open (resetTimeoutMs=30_000 hasn't
     // elapsed). withRetry must not retry a CircuitBreakerOpenError, so
     // this call fails immediately with zero additional strategy calls.
     const secondCall = resilient.generate({ prompt: "2" });
+    const secondAssertion = expect(secondCall).rejects.toBeInstanceOf(CircuitBreakerOpenError);
     await vi.runAllTimersAsync();
-    await expect(secondCall).rejects.toBeInstanceOf(CircuitBreakerOpenError);
+    await secondAssertion;
     expect(strategy.generate).toHaveBeenCalledTimes(2);
   });
 });

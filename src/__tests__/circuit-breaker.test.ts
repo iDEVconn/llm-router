@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { withCircuitBreaker } from "../circuit-breaker";
-import { CircuitBreakerOpenError } from "../errors";
-import { BudgetExceededError } from "../errors";
+import { BudgetExceededError, CircuitBreakerOpenError, RateLimitExceededError } from "../errors";
 import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
 
 function makeStrategy(): LlmStrategy & {
@@ -194,6 +193,21 @@ describe("withCircuitBreaker", () => {
     await expect(wrapped.generate({ prompt: "1" })).rejects.toBeInstanceOf(BudgetExceededError);
     await expect(wrapped.generate({ prompt: "2" })).rejects.toBeInstanceOf(BudgetExceededError);
     // Still closed — real provider errors, not BudgetExceededError, would have opened it after 1.
+    expect(strategy.generate).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not count a RateLimitExceededError from a composed rate limiter as a circuit-breaker failure", async () => {
+    const strategy = makeStrategy();
+    strategy.generate.mockRejectedValue(new RateLimitExceededError("claude", 30_000));
+    const wrapped = withCircuitBreaker(strategy, {
+      threshold: 1,
+      samplingWindowMs: 60_000,
+      resetTimeoutMs: 5_000,
+    });
+
+    await expect(wrapped.generate({ prompt: "1" })).rejects.toBeInstanceOf(RateLimitExceededError);
+    await expect(wrapped.generate({ prompt: "2" })).rejects.toBeInstanceOf(RateLimitExceededError);
+    // Still closed — a real provider error would have opened it after 1.
     expect(strategy.generate).toHaveBeenCalledTimes(2);
   });
 

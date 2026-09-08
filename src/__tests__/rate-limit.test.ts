@@ -65,8 +65,9 @@ describe("withRateLimit", () => {
     await wrapped.generate({ prompt: "1" });
 
     const promise = wrapped.generate({ prompt: "2" });
+    const assertion = expect(promise).rejects.toBeInstanceOf(RateLimitExceededError);
     await vi.advanceTimersByTimeAsync(1_100);
-    await expect(promise).rejects.toBeInstanceOf(RateLimitExceededError);
+    await assertion;
     expect(strategy.generate).toHaveBeenCalledTimes(1);
   });
 

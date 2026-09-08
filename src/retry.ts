@@ -27,15 +27,15 @@ function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
       reject(signal.reason ?? new Error("Aborted"));
       return;
     }
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(signal.reason ?? new Error("Aborted"));
-      },
-      { once: true },
-    );
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason ?? new Error("Aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

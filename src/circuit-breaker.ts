@@ -1,4 +1,4 @@
-import { CircuitBreakerOpenError } from "./errors";
+import { CircuitBreakerOpenError, RateLimitExceededError } from "./errors";
 import { isAbortError, isCallerFaultError } from "./resilience-errors";
 import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "./types";
 
@@ -86,7 +86,12 @@ export function withCircuitBreaker(
           setState("closed");
           return response;
         } catch (err) {
-          if (!isCallerFaultError(err) && !isAbortError(err, genOpts.signal)) {
+          if (
+            !isCallerFaultError(err) &&
+            !isAbortError(err, genOpts.signal) &&
+            !(err instanceof CircuitBreakerOpenError) &&
+            !(err instanceof RateLimitExceededError)
+          ) {
             setState("open");
             openedAt = Date.now();
           }
@@ -99,7 +104,12 @@ export function withCircuitBreaker(
       try {
         return await strategy.generate(genOpts);
       } catch (err) {
-        if (!isCallerFaultError(err) && !isAbortError(err, genOpts.signal)) {
+        if (
+          !isCallerFaultError(err) &&
+          !isAbortError(err, genOpts.signal) &&
+          !(err instanceof CircuitBreakerOpenError) &&
+          !(err instanceof RateLimitExceededError)
+        ) {
           recordFailure();
         }
         throw err;

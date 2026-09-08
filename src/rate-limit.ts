@@ -27,21 +27,21 @@ function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
       reject(signal.reason ?? new Error("Aborted"));
       return;
     }
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(signal.reason ?? new Error("Aborted"));
-      },
-      { once: true },
-    );
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason ?? new Error("Aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
 /**
  * Wraps a strategy with a token-bucket rate limiter (capacity =
- * `tokensPerSecond`, refilling continuously from elapsed time rather than a
+ * `max(1, tokensPerSecond)`, refilling continuously from elapsed time rather than a
  * running interval timer) plus an optional `maxConcurrent` in-flight cap.
  * A call with no available capacity blocks until capacity frees up, up to
  * `maxWaitMs`, then throws `RateLimitExceededError`.

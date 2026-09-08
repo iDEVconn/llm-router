@@ -67,9 +67,10 @@ describe("withRetry", () => {
     });
 
     const promise = wrapped.generate({ prompt: "hi" });
+    const assertion = expect(promise).rejects.toThrow("always fails");
     await vi.runAllTimersAsync();
 
-    await expect(promise).rejects.toThrow("always fails");
+    await assertion;
     expect(strategy.generate).toHaveBeenCalledTimes(3);
   });
 
