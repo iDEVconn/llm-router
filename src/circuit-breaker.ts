@@ -97,9 +97,7 @@ export function withCircuitBreaker(
       }
 
       try {
-        const response = await strategy.generate(genOpts);
-        failureTimestamps = [];
-        return response;
+        return await strategy.generate(genOpts);
       } catch (err) {
         if (!isCallerFaultError(err) && !isAbortError(err, genOpts.signal)) {
           recordFailure();

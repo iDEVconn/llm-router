@@ -45,6 +45,28 @@ describe("withCircuitBreaker", () => {
     expect(strategy.generate).toHaveBeenCalledTimes(2);
   });
 
+  it("does not reset the failure count on an interleaved success", async () => {
+    const strategy = makeStrategy();
+    strategy.generate
+      .mockRejectedValueOnce(new Error("down"))
+      .mockResolvedValueOnce(okResponse)
+      .mockRejectedValueOnce(new Error("down"));
+    const wrapped = withCircuitBreaker(strategy, {
+      threshold: 2,
+      samplingWindowMs: 60_000,
+      resetTimeoutMs: 10_000,
+    });
+
+    await expect(wrapped.generate({ prompt: "1" })).rejects.toThrow("down");
+    await expect(wrapped.generate({ prompt: "2" })).resolves.toEqual(okResponse);
+    await expect(wrapped.generate({ prompt: "3" })).rejects.toThrow("down");
+
+    // Both failures (1 and 3) are within the same window despite the
+    // interleaved success — the breaker should now be open.
+    await expect(wrapped.generate({ prompt: "4" })).rejects.toBeInstanceOf(CircuitBreakerOpenError);
+    expect(strategy.generate).toHaveBeenCalledTimes(3);
+  });
+
   it("opens after `threshold` failures within the sampling window and fails fast without calling the strategy", async () => {
     const strategy = makeStrategy();
     strategy.generate.mockRejectedValue(new Error("down"));
