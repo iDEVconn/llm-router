@@ -256,6 +256,9 @@ export class GeminiStrategy implements LlmStrategy {
     const model = client.getGenerativeModel({
       model: modelName,
       ...(opts.systemPrompt ? { systemInstruction: opts.systemPrompt } : {}),
+      ...(opts.maxTokens !== undefined
+        ? { generationConfig: { maxOutputTokens: opts.maxTokens } }
+        : {}),
     });
 
     const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
@@ -322,6 +325,7 @@ export class GeminiStrategy implements LlmStrategy {
     if (opts.systemPrompt) config.systemInstruction = opts.systemPrompt;
     if (opts.signal) config.abortSignal = opts.signal;
     if (thinkingConfig) config.thinkingConfig = thinkingConfig;
+    if (opts.maxTokens !== undefined) config.maxOutputTokens = opts.maxTokens;
     const hasConfig = Object.keys(config).length > 0;
 
     if (opts.onToken) {
