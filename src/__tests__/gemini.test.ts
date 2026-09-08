@@ -41,7 +41,12 @@ async function* asyncGenOf(items: any[]) {
   for (const item of items) yield item;
 }
 
-import { InvalidThinkingConfigError, LlmKeyValidationError, UnsupportedThinkingModeError } from "../errors";
+import {
+  InvalidGenerateOptionsError,
+  InvalidThinkingConfigError,
+  LlmKeyValidationError,
+  UnsupportedThinkingModeError,
+} from "../errors";
 import { GeminiStrategy } from "../gemini/index";
 
 describe("GeminiStrategy", () => {
@@ -453,6 +458,108 @@ describe("GeminiStrategy", () => {
       expect(result.text).toBe("hello");
       expect(result.usage).toEqual({ inputTokens: 1, outputTokens: 2 });
       expect(result.truncated).toBe(false);
+    });
+  });
+
+  describe("messages (multi-turn)", () => {
+    it("direct API: builds a contents array with assistant mapped to model role", async () => {
+      mockGenerateContent.mockResolvedValueOnce({
+        response: { text: () => "ok" },
+      });
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "second" },
+          { role: "user", content: "third" },
+        ],
+      });
+
+      const call = mockGenerateContent.mock.calls[0]![0];
+      expect(call.contents).toEqual([
+        { role: "user", parts: [{ text: "first" }] },
+        { role: "model", parts: [{ text: "second" }] },
+        { role: "user", parts: [{ text: "third" }] },
+      ]);
+    });
+
+    it("direct API: puts attachments on the last turn's parts, not the first", async () => {
+      mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "ok" } });
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        messages: [
+          { role: "user", content: "first" },
+          { role: "user", content: "third" },
+        ],
+        attachments: [{ data: Buffer.from("img"), mimetype: "image/png" }],
+      });
+
+      const call = mockGenerateContent.mock.calls[0]![0];
+      expect(call.contents[0]).toEqual({ role: "user", parts: [{ text: "first" }] });
+      expect(call.contents[1].parts[0]).toEqual({ text: "third" });
+      expect(call.contents[1].parts[1].inlineData.mimeType).toBe("image/png");
+    });
+
+    it("direct API: throws InvalidGenerateOptionsError when both prompt and messages are set", async () => {
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+      await expect(
+        strategy.generate({ prompt: "p", messages: [{ role: "user", content: "m" }] }),
+      ).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+    });
+
+    it("direct API: throws InvalidGenerateOptionsError when neither prompt nor messages are set", async () => {
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+      await expect(strategy.generate({})).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+    });
+
+    it("Vertex: builds a contents array with assistant mapped to model role", async () => {
+      mockVertexGenerateContent.mockResolvedValueOnce({ text: "ok" });
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      await strategy.generate({
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "second" },
+          { role: "user", content: "third" },
+        ],
+      });
+
+      const call = mockVertexGenerateContent.mock.calls[0]![0];
+      expect(call.contents).toEqual([
+        { role: "user", parts: [{ text: "first" }] },
+        { role: "model", parts: [{ text: "second" }] },
+        { role: "user", parts: [{ text: "third" }] },
+      ]);
+    });
+
+    it("Vertex: puts attachments on the last turn's parts, not the first", async () => {
+      mockVertexGenerateContent.mockResolvedValueOnce({ text: "ok" });
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      await strategy.generate({
+        messages: [
+          { role: "user", content: "first" },
+          { role: "user", content: "third" },
+        ],
+        attachments: [{ data: Buffer.from("img"), mimetype: "image/png" }],
+      });
+
+      const call = mockVertexGenerateContent.mock.calls[0]![0];
+      expect(call.contents[0]).toEqual({ role: "user", parts: [{ text: "first" }] });
+      expect(call.contents[1].parts[0]).toEqual({ text: "third" });
+      expect(call.contents[1].parts[1].inlineData.mimeType).toBe("image/png");
+    });
+
+    it("Vertex: throws InvalidGenerateOptionsError when both prompt and messages are set", async () => {
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+      await expect(
+        strategy.generate({ prompt: "p", messages: [{ role: "user", content: "m" }] }),
+      ).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      expect(mockVertexGenerateContent).not.toHaveBeenCalled();
     });
   });
 });
