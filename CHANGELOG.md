@@ -1,5 +1,11 @@
 # @idevconn/llm-router
 
+## 0.12.1
+
+### Patch Changes
+
+- 01b59e0: Fix GeminiStrategy.generate() dropping opts.maxTokens — now forwarded as generationConfig.maxOutputTokens (direct API) and config.maxOutputTokens (Vertex).
+
 ## 0.12.0
 
 ### Minor Changes
