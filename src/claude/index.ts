@@ -4,7 +4,8 @@ import {
   LlmKeyValidationError,
   UnsupportedThinkingModeError,
 } from "../errors";
-import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
+import { assertExactlyOnePromptSource } from "../validate-generate-options";
+import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -66,6 +67,8 @@ export class ClaudeStrategy implements LlmStrategy {
   }
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
+    assertExactlyOnePromptSource(opts);
+
     const client = opts.apiKey
       ? new Anthropic({ apiKey: opts.apiKey })
       : this.getPlatformClient();
@@ -84,24 +87,37 @@ export class ClaudeStrategy implements LlmStrategy {
           source: { type: "base64"; media_type: "application/pdf"; data: string };
         };
 
-    const content: ContentBlock[] = [];
-
+    const attachmentBlocks: ContentBlock[] = [];
     for (const attachment of opts.attachments ?? []) {
       const data = toBase64(attachment.data);
       if (SUPPORTED_IMAGE_TYPES.has(attachment.mimetype)) {
-        content.push({
+        attachmentBlocks.push({
           type: "image",
           source: { type: "base64", media_type: attachment.mimetype, data },
         });
       } else {
-        content.push({
+        attachmentBlocks.push({
           type: "document",
           source: { type: "base64", media_type: "application/pdf", data },
         });
       }
     }
 
-    content.push({ type: "text", text: opts.prompt });
+    type AnthropicMessage = { role: "user" | "assistant"; content: ContentBlock[] };
+    let anthropicMessages: AnthropicMessage[];
+
+    if (opts.messages) {
+      anthropicMessages = (opts.messages as LlmMessage[]).map((message) => ({
+        role: message.role,
+        content: [{ type: "text" as const, text: message.content }],
+      }));
+      const lastMessage = anthropicMessages[anthropicMessages.length - 1];
+      if (lastMessage) lastMessage.content.unshift(...attachmentBlocks);
+    } else {
+      anthropicMessages = [
+        { role: "user", content: [...attachmentBlocks, { type: "text", text: opts.prompt! }] },
+      ];
+    }
 
     const params = {
       model: modelName,
@@ -127,7 +143,7 @@ export class ClaudeStrategy implements LlmStrategy {
       // pkg compiles without pulling in the entire Anthropic.Messages
       // type surface as a public dep.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      messages: [{ role: "user" as const, content: content as any }],
+      messages: anthropicMessages as any,
     };
     const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
 

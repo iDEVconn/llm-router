@@ -14,6 +14,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 });
 
 import {
+  InvalidGenerateOptionsError,
   InvalidThinkingConfigError,
   LlmKeyValidationError,
   UnsupportedThinkingModeError,
@@ -372,6 +373,72 @@ describe("ClaudeStrategy", () => {
         strategy.generate({ prompt: "p", signal: controller.signal }),
       ).rejects.toThrow();
       expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("messages (multi-turn)", () => {
+    it("builds a multi-turn messages array from 2+ turns", async () => {
+      mockMessagesCreate.mockResolvedValueOnce({
+        content: [{ type: "text", text: "ok" }],
+        model: "claude-haiku-4-5",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "second" },
+          { role: "user", content: "third" },
+        ],
+      });
+
+      const call = mockMessagesCreate.mock.calls[0]![0];
+      expect(call.messages).toEqual([
+        { role: "user", content: [{ type: "text", text: "first" }] },
+        { role: "assistant", content: [{ type: "text", text: "second" }] },
+        { role: "user", content: [{ type: "text", text: "third" }] },
+      ]);
+    });
+
+    it("puts attachments on the last turn's content, not the first", async () => {
+      mockMessagesCreate.mockResolvedValueOnce({
+        content: [],
+        model: "claude-haiku-4-5",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      });
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "second" },
+          { role: "user", content: "third" },
+        ],
+        attachments: [{ data: Buffer.from("img"), mimetype: "image/png" }],
+      });
+
+      const call = mockMessagesCreate.mock.calls[0]![0];
+      expect(call.messages[0].content).toEqual([{ type: "text", text: "first" }]);
+      expect(call.messages[1].content).toEqual([{ type: "text", text: "second" }]);
+      expect(call.messages[2].content).toEqual([
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "aW1n" } },
+        { type: "text", text: "third" },
+      ]);
+    });
+
+    it("throws InvalidGenerateOptionsError when both prompt and messages are set", async () => {
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+      await expect(
+        strategy.generate({ prompt: "p", messages: [{ role: "user", content: "m" }] }),
+      ).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      expect(mockMessagesCreate).not.toHaveBeenCalled();
+    });
+
+    it("throws InvalidGenerateOptionsError when neither prompt nor messages are set", async () => {
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+      await expect(strategy.generate({})).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      expect(mockMessagesCreate).not.toHaveBeenCalled();
     });
   });
 });
