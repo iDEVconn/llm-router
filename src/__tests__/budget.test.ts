@@ -64,4 +64,19 @@ describe("withBudget", () => {
     await expect(wrapped.generate({ prompt: "hi" })).rejects.toThrow(BudgetExceededError);
     expect(onCost).not.toHaveBeenCalled();
   });
+
+  it("forwards onToken, thinking, and signal to the wrapped strategy unmodified", async () => {
+    const strategy = makeStrategy({ inputTokens: 1, outputTokens: 1 });
+    const wrapped = withBudget(strategy, { pricing });
+    const onToken = vi.fn();
+    const controller = new AbortController();
+    const thinking = { type: "budget" as const, tokens: 2048 };
+
+    await wrapped.generate({ prompt: "hi", onToken, thinking, signal: controller.signal });
+
+    const passedOpts = (strategy.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(passedOpts.onToken).toBe(onToken);
+    expect(passedOpts.thinking).toBe(thinking);
+    expect(passedOpts.signal).toBe(controller.signal);
+  });
 });

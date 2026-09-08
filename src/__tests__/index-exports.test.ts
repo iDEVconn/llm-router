@@ -29,6 +29,8 @@ describe("public exports", () => {
       "cheap",
       "reasoning",
       "multilingual",
+      "streaming",
+      "thinking",
     ]);
   });
 

@@ -1,5 +1,9 @@
 import OpenAI from "openai";
-import { LlmKeyValidationError, UnsupportedAttachmentError } from "../errors";
+import {
+  LlmKeyValidationError,
+  UnsupportedAttachmentError,
+  UnsupportedThinkingModeError,
+} from "../errors";
 import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
@@ -33,7 +37,7 @@ function toBase64(data: string | Buffer): string {
  */
 export class GrokStrategy implements LlmStrategy {
   readonly providerName = "grok";
-  readonly capabilities = ["vision", "cheap"] as const;
+  readonly capabilities = ["vision", "cheap", "streaming"] as const;
   readonly defaultModel: string;
   private platformClient: OpenAI | null = null;
   private readonly platformApiKey: string | undefined;
@@ -71,6 +75,15 @@ export class GrokStrategy implements LlmStrategy {
       }
     }
 
+    // xAI's reasoning-effort parameter contract could not be verified
+    // against primary docs (docs.x.ai) — do not wire this up without
+    // confirming the real parameter name/shape there first.
+    if (opts.thinking) {
+      throw new UnsupportedThinkingModeError(this.providerName, opts.thinking.type, []);
+    }
+
+    opts.signal?.throwIfAborted();
+
     const client = opts.apiKey
       ? new OpenAI({ apiKey: opts.apiKey, baseURL: this.baseURL })
       : this.getPlatformClient();
@@ -103,25 +116,85 @@ export class GrokStrategy implements LlmStrategy {
         ]
       : [{ role: "user" as const, content: messageContent }];
 
-    const response = await client.chat.completions.create({
+    const body = {
       model: modelName,
       // Cast through unknown to avoid a hard dep on OpenAI's deep message types.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       messages: messages as any,
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
-    });
+    };
 
-    const raw = response.choices[0]?.message?.content ?? "";
-    const text = typeof raw === "string" ? raw : "";
+    if (opts.onToken) {
+      return this.generateStreaming(client, body, opts.onToken, opts.signal);
+    }
+
+    const response = await client.chat.completions.create(body, { signal: opts.signal });
+    return this.shapeResponse(response);
+  }
+
+  private async generateStreaming(
+    client: OpenAI,
+    body: Record<string, unknown>,
+    onToken: (delta: string) => void,
+    signal: AbortSignal | undefined,
+  ): Promise<LlmResponse> {
+    const stream = await client.chat.completions.create(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { ...body, stream: true, stream_options: { include_usage: true } } as any,
+      { signal },
+    );
+
+    let text = "";
+    let model: string | undefined;
+    let finishReason: string | null | undefined;
+    let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+
+    for await (const chunk of stream as unknown as AsyncIterable<{
+      choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>;
+      model?: string;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    }>) {
+      if (chunk.model) model = chunk.model;
+      if (chunk.usage) usage = chunk.usage;
+      const choice = chunk.choices?.[0];
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice?.delta?.content;
+      if (delta) {
+        text += delta;
+        try {
+          onToken(delta);
+        } catch (err) {
+          console.warn("grok onToken callback threw; ignoring", err);
+        }
+      }
+    }
+
+    return this.shapeResponse({
+      choices: [{ message: { content: text }, finish_reason: finishReason }],
+      model: model ?? "",
+      usage,
+    });
+  }
+
+  private shapeResponse(raw: {
+    choices?: Array<{
+      message?: { content?: string | null };
+      finish_reason?: string | null;
+    }>;
+    model: string;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+  }): LlmResponse {
+    const rawContent = raw.choices?.[0]?.message?.content ?? "";
+    const text = typeof rawContent === "string" ? rawContent : "";
 
     return {
       text,
-      model: response.model,
+      model: raw.model,
       usage: {
-        inputTokens: response.usage?.prompt_tokens ?? 0,
-        outputTokens: response.usage?.completion_tokens ?? 0,
+        inputTokens: raw.usage?.prompt_tokens ?? 0,
+        outputTokens: raw.usage?.completion_tokens ?? 0,
       },
-      truncated: response.choices[0]?.finish_reason === "length",
+      truncated: raw.choices?.[0]?.finish_reason === "length",
     };
   }
 

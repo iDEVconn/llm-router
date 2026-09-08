@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGenerateContent = vi.fn();
+const mockGenerateContentStream = vi.fn();
 const mockCountTokens = vi.fn();
 const mockGetGenerativeModel = vi.fn();
 const mockVertexGenerateContent = vi.fn();
+const mockVertexGenerateContentStream = vi.fn();
 const mockGoogleGenAI = vi.fn();
 
 vi.mock("@google/generative-ai", () => {
@@ -11,7 +13,11 @@ vi.mock("@google/generative-ai", () => {
     constructor(public readonly key: string) {}
     getGenerativeModel(args: { model: string }) {
       mockGetGenerativeModel(args);
-      return { generateContent: mockGenerateContent, countTokens: mockCountTokens };
+      return {
+        generateContent: mockGenerateContent,
+        generateContentStream: mockGenerateContentStream,
+        countTokens: mockCountTokens,
+      };
     }
   }
   return { GoogleGenerativeAI };
@@ -22,12 +28,20 @@ vi.mock("@google/genai", () => {
     constructor(opts: Record<string, unknown>) {
       mockGoogleGenAI(opts);
     }
-    models = { generateContent: mockVertexGenerateContent };
+    models = {
+      generateContent: mockVertexGenerateContent,
+      generateContentStream: mockVertexGenerateContentStream,
+    };
   }
   return { GoogleGenAI };
 });
 
-import { LlmKeyValidationError } from "../errors";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function* asyncGenOf(items: any[]) {
+  for (const item of items) yield item;
+}
+
+import { InvalidThinkingConfigError, LlmKeyValidationError, UnsupportedThinkingModeError } from "../errors";
 import { GeminiStrategy } from "../gemini/index";
 
 describe("GeminiStrategy", () => {
@@ -201,7 +215,91 @@ describe("GeminiStrategy", () => {
 
   it("declares its capability tags", () => {
     const strategy = new GeminiStrategy({ apiKey: "k" });
-    expect(strategy.capabilities).toEqual(["vision", "long-context", "multilingual", "cheap"]);
+    expect(strategy.capabilities).toEqual([
+      "vision",
+      "long-context",
+      "multilingual",
+      "cheap",
+      "streaming",
+    ]);
+  });
+
+  describe("streaming (direct API)", () => {
+    it("uses generateContentStream instead of generateContent when onToken is set", async () => {
+      mockGenerateContentStream.mockResolvedValueOnce({
+        stream: asyncGenOf([{ text: () => "hel" }, { text: () => "lo" }]),
+        response: Promise.resolve({
+          text: () => "hello",
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2 },
+        }),
+      });
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+      const deltas: string[] = [];
+
+      const result = await strategy.generate({ prompt: "x", onToken: (d) => deltas.push(d) });
+
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+      expect(mockGenerateContentStream).toHaveBeenCalledOnce();
+      expect(deltas).toEqual(["hel", "lo"]);
+      expect(result.text).toBe("hello");
+      expect(result.usage).toEqual({ inputTokens: 1, outputTokens: 2 });
+    });
+
+    it("does not propagate an onToken callback that throws", async () => {
+      mockGenerateContentStream.mockResolvedValueOnce({
+        stream: asyncGenOf([{ text: () => "hi" }]),
+        response: Promise.resolve({ text: () => "hi" }),
+      });
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+
+      const result = await strategy.generate({
+        prompt: "x",
+        onToken: () => {
+          throw new Error("callback boom");
+        },
+      });
+
+      expect(result.text).toBe("hi");
+    });
+  });
+
+  describe("thinking (direct API — unsupported)", () => {
+    it("throws UnsupportedThinkingModeError for adaptive, no network call", async () => {
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+      await expect(
+        strategy.generate({ prompt: "x", thinking: { type: "adaptive" } }),
+      ).rejects.toBeInstanceOf(UnsupportedThinkingModeError);
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+      expect(mockGenerateContentStream).not.toHaveBeenCalled();
+    });
+
+    it("throws UnsupportedThinkingModeError for budget, no network call", async () => {
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+      await expect(
+        strategy.generate({ prompt: "x", thinking: { type: "budget", tokens: 2000 } }),
+      ).rejects.toBeInstanceOf(UnsupportedThinkingModeError);
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+    });
+
+    it("throws UnsupportedThinkingModeError for effort, no network call", async () => {
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+      await expect(
+        strategy.generate({ prompt: "x", thinking: { type: "effort", level: "high" } }),
+      ).rejects.toBeInstanceOf(UnsupportedThinkingModeError);
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("signal", () => {
+    it("rejects promptly when the signal is already aborted, no network call", async () => {
+      const strategy = new GeminiStrategy({ apiKey: "k" });
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(strategy.generate({ prompt: "x", signal: controller.signal })).rejects.toBeTruthy();
+      expect(mockGenerateContent).not.toHaveBeenCalled();
+      expect(mockGenerateContentStream).not.toHaveBeenCalled();
+    });
   });
 
   describe("connection=vertex", () => {
@@ -250,6 +348,111 @@ describe("GeminiStrategy", () => {
 
       await expect(strategy.generate({ prompt: "x" })).rejects.toThrow("vertex 403");
       expect(mockGenerateContent).not.toHaveBeenCalled();
+    });
+
+    it("declares streaming and thinking capability tags", () => {
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+      expect(strategy.capabilities).toEqual([
+        "vision",
+        "long-context",
+        "multilingual",
+        "cheap",
+        "streaming",
+        "thinking",
+      ]);
+    });
+
+    it("maps adaptive thinking to thinkingBudget: -1", async () => {
+      mockVertexGenerateContent.mockResolvedValueOnce({ text: "ok" });
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      await strategy.generate({ prompt: "x", thinking: { type: "adaptive" } });
+
+      const call = mockVertexGenerateContent.mock.calls[0]![0];
+      expect(call.config.thinkingConfig.thinkingBudget).toBe(-1);
+    });
+
+    it("maps budget thinking with valid tokens to thinkingConfig.thinkingBudget", async () => {
+      mockVertexGenerateContent.mockResolvedValueOnce({ text: "ok" });
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      await strategy.generate({ prompt: "x", thinking: { type: "budget", tokens: 2000 } });
+
+      const call = mockVertexGenerateContent.mock.calls[0]![0];
+      expect(call.config.thinkingConfig.thinkingBudget).toBe(2000);
+    });
+
+    it("throws InvalidThinkingConfigError for non-positive budget tokens, no network call", async () => {
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      await expect(
+        strategy.generate({ prompt: "x", thinking: { type: "budget", tokens: 0 } }),
+      ).rejects.toBeInstanceOf(InvalidThinkingConfigError);
+      expect(mockVertexGenerateContent).not.toHaveBeenCalled();
+    });
+
+    it("throws UnsupportedThinkingModeError for effort, no network call", async () => {
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      await expect(
+        strategy.generate({ prompt: "x", thinking: { type: "effort", level: "high" } }),
+      ).rejects.toBeInstanceOf(UnsupportedThinkingModeError);
+      expect(mockVertexGenerateContent).not.toHaveBeenCalled();
+    });
+
+    it("extracts a thought part into LlmResponse.thinking", async () => {
+      mockVertexGenerateContent.mockResolvedValueOnce({
+        candidates: [
+          {
+            content: {
+              parts: [
+                { text: "let me reason...", thought: true },
+                { text: "final answer" },
+              ],
+            },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 10 },
+      });
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      const result = await strategy.generate({ prompt: "x", thinking: { type: "adaptive" } });
+
+      expect(result.thinking).toBe("let me reason...");
+      expect(result.text).toBe("final answer");
+    });
+
+    it("leaves LlmResponse.thinking undefined when no thought part is present", async () => {
+      mockVertexGenerateContent.mockResolvedValueOnce({ text: "plain answer" });
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      const result = await strategy.generate({ prompt: "x" });
+
+      expect(result.thinking).toBeUndefined();
+    });
+
+    it("streams via generateContentStream when onToken is set", async () => {
+      mockVertexGenerateContentStream.mockResolvedValueOnce(
+        asyncGenOf([
+          { candidates: [{ content: { parts: [{ text: "he" }] } }] },
+          {
+            candidates: [{ content: { parts: [{ text: "llo" }] }, finishReason: "STOP" }],
+            usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2 },
+          },
+        ]),
+      );
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+      const deltas: string[] = [];
+
+      const result = await strategy.generate({ prompt: "x", onToken: (d) => deltas.push(d) });
+
+      expect(mockVertexGenerateContent).not.toHaveBeenCalled();
+      expect(mockVertexGenerateContentStream).toHaveBeenCalledOnce();
+      expect(deltas).toEqual(["he", "llo"]);
+      expect(result.text).toBe("hello");
+      expect(result.usage).toEqual({ inputTokens: 1, outputTokens: 2 });
+      expect(result.truncated).toBe(false);
     });
   });
 });

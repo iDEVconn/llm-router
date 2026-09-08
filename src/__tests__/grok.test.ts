@@ -15,7 +15,11 @@ vi.mock("openai", () => {
   return { default: OpenAI };
 });
 
-import { LlmKeyValidationError, UnsupportedAttachmentError } from "../errors";
+import {
+  LlmKeyValidationError,
+  UnsupportedAttachmentError,
+  UnsupportedThinkingModeError,
+} from "../errors";
 import { GrokStrategy } from "../grok/index";
 
 describe("GrokStrategy", () => {
@@ -168,6 +172,112 @@ describe("GrokStrategy", () => {
 
   it("declares its capability tags", () => {
     const strategy = new GrokStrategy({ apiKey: "k" });
-    expect(strategy.capabilities).toEqual(["vision", "cheap"]);
+    expect(strategy.capabilities).toEqual(["vision", "cheap", "streaming"]);
+  });
+
+  it("streams tokens via onToken and resolves the final response", async () => {
+    async function* chunks() {
+      yield { choices: [{ delta: { content: "Hel" }, finish_reason: null }], model: "grok-4.3" };
+      yield { choices: [{ delta: { content: "lo" }, finish_reason: null }], model: "grok-4.3" };
+      yield { choices: [{ delta: {}, finish_reason: "stop" }], model: "grok-4.3" };
+      yield { choices: [], model: "grok-4.3", usage: { prompt_tokens: 5, completion_tokens: 2 } };
+    }
+    mockChatCompletionsCreate.mockResolvedValueOnce(chunks());
+    const strategy = new GrokStrategy({ apiKey: "k" });
+    const deltas: string[] = [];
+
+    const result = await strategy.generate({ prompt: "p", onToken: (d) => deltas.push(d) });
+
+    expect(deltas).toEqual(["Hel", "lo"]);
+    expect(result.text).toBe("Hello");
+    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 2 });
+    expect(result.truncated).toBe(false);
+
+    const call = mockChatCompletionsCreate.mock.calls[0]![0];
+    expect(call.stream).toBe(true);
+    expect(call.stream_options).toEqual({ include_usage: true });
+  });
+
+  it("swallows errors thrown by onToken without failing the call", async () => {
+    async function* chunks() {
+      yield { choices: [{ delta: { content: "hi" }, finish_reason: "stop" }], model: "grok-4.3" };
+      yield { choices: [], model: "grok-4.3", usage: { prompt_tokens: 1, completion_tokens: 1 } };
+    }
+    mockChatCompletionsCreate.mockResolvedValueOnce(chunks());
+    const strategy = new GrokStrategy({ apiKey: "k" });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await strategy.generate({
+      prompt: "p",
+      onToken: () => {
+        throw new Error("callback exploded");
+      },
+    });
+
+    expect(result.text).toBe("hi");
+    warnSpy.mockRestore();
+  });
+
+  it("does not use the streaming path when onToken is not provided", async () => {
+    mockChatCompletionsCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "blocking" } }],
+      model: "grok-4.3",
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    });
+    const strategy = new GrokStrategy({ apiKey: "k" });
+
+    await strategy.generate({ prompt: "p" });
+
+    const call = mockChatCompletionsCreate.mock.calls[0]![0];
+    expect(call.stream).toBeUndefined();
+  });
+
+  it.each([
+    { type: "adaptive" as const },
+    { type: "budget" as const, tokens: 2000 },
+    { type: "effort" as const, level: "high" as const },
+  ])("throws UnsupportedThinkingModeError for thinking %o and makes no network call", async (thinking) => {
+    const strategy = new GrokStrategy({ apiKey: "k" });
+
+    await expect(strategy.generate({ prompt: "p", thinking })).rejects.toBeInstanceOf(
+      UnsupportedThinkingModeError,
+    );
+    expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
+  });
+
+  it("never populates LlmResponse.thinking", async () => {
+    mockChatCompletionsCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "ok" } }],
+      model: "grok-4.3",
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    });
+    const strategy = new GrokStrategy({ apiKey: "k" });
+
+    const result = await strategy.generate({ prompt: "p" });
+    expect(result.thinking).toBeUndefined();
+  });
+
+  it("rejects promptly on a pre-aborted signal without calling the SDK", async () => {
+    const strategy = new GrokStrategy({ apiKey: "k" });
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(strategy.generate({ prompt: "p", signal: controller.signal })).rejects.toThrow();
+    expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
+  });
+
+  it("passes signal through to the SDK call", async () => {
+    mockChatCompletionsCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: "ok" } }],
+      model: "grok-4.3",
+      usage: { prompt_tokens: 1, completion_tokens: 1 },
+    });
+    const strategy = new GrokStrategy({ apiKey: "k" });
+    const controller = new AbortController();
+
+    await strategy.generate({ prompt: "p", signal: controller.signal });
+
+    const requestOptions = mockChatCompletionsCreate.mock.calls[0]![1];
+    expect(requestOptions?.signal).toBe(controller.signal);
   });
 });

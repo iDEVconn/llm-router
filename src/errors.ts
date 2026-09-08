@@ -10,6 +10,8 @@
  *   - `TaskDecompositionError`       → 502 (upstream model didn't cooperate)
  *   - `NoAvailableProviderError`     → 400 (no BYOK/platform key for the routed provider)
  *   - `BudgetExceededError`         → 402 (cost budget exhausted)
+ *   - `UnsupportedThinkingModeError` → 400
+ *   - `InvalidThinkingConfigError`   → 400
  */
 
 export class UnknownProviderError extends Error {
@@ -91,5 +93,26 @@ export class BudgetExceededError extends Error {
         : `Accumulated cost ${cost} has reached maxCostTotal ${limit}; refusing further calls.`,
     );
     this.name = "BudgetExceededError";
+  }
+}
+
+export class UnsupportedThinkingModeError extends Error {
+  constructor(
+    public readonly provider: string,
+    public readonly requested: string,
+    public readonly supported: readonly string[],
+  ) {
+    super(
+      `${provider} does not support thinking mode "${requested}"` +
+        (supported.length ? ` (supports: ${supported.join(", ")})` : " (no thinking support)"),
+    );
+    this.name = "UnsupportedThinkingModeError";
+  }
+}
+
+export class InvalidThinkingConfigError extends Error {
+  constructor(public readonly reason: string) {
+    super(`Invalid thinking configuration: ${reason}`);
+    this.name = "InvalidThinkingConfigError";
   }
 }
