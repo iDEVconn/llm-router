@@ -139,6 +139,27 @@ describe("GeminiStrategy", () => {
     expect(mockGetGenerativeModel).toHaveBeenCalledWith({ model: "gemini-2.5-flash-lite" });
   });
 
+  it("forwards maxTokens as generationConfig.maxOutputTokens", async () => {
+    mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "" } });
+    const strategy = new GeminiStrategy({ apiKey: "k" });
+
+    await strategy.generate({ prompt: "x", maxTokens: 256 });
+
+    expect(mockGetGenerativeModel).toHaveBeenCalledWith({
+      model: "gemini-2.5-flash-lite",
+      generationConfig: { maxOutputTokens: 256 },
+    });
+  });
+
+  it("omits generationConfig entirely when maxTokens is not provided", async () => {
+    mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "" } });
+    const strategy = new GeminiStrategy({ apiKey: "k" });
+
+    await strategy.generate({ prompt: "x" });
+
+    expect(mockGetGenerativeModel).toHaveBeenCalledWith({ model: "gemini-2.5-flash-lite" });
+  });
+
   it("uses the per-call apiKey instead of the platform key when given", async () => {
     mockGenerateContent.mockResolvedValueOnce({ response: { text: () => "" } });
     const strategy = new GeminiStrategy({ apiKey: "platform-key" });
@@ -385,6 +406,26 @@ describe("GeminiStrategy", () => {
 
       const call = mockVertexGenerateContent.mock.calls[0]![0];
       expect(call.config.thinkingConfig.thinkingBudget).toBe(2000);
+    });
+
+    it("forwards maxTokens as config.maxOutputTokens", async () => {
+      mockVertexGenerateContent.mockResolvedValueOnce({ text: "ok" });
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      await strategy.generate({ prompt: "x", maxTokens: 512 });
+
+      const call = mockVertexGenerateContent.mock.calls[0]![0];
+      expect(call.config.maxOutputTokens).toBe(512);
+    });
+
+    it("omits maxOutputTokens from config when maxTokens is not provided", async () => {
+      mockVertexGenerateContent.mockResolvedValueOnce({ text: "ok" });
+      const strategy = new GeminiStrategy({ connection: "vertex" });
+
+      await strategy.generate({ prompt: "x" });
+
+      const call = mockVertexGenerateContent.mock.calls[0]![0];
+      expect(call.config).toBeUndefined();
     });
 
     it("throws InvalidThinkingConfigError for non-positive budget tokens, no network call", async () => {
