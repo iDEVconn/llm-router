@@ -1,5 +1,11 @@
 # @idevconn/llm-router
 
+## 0.12.0
+
+### Minor Changes
+
+- 8414686: Add `withRetry` (exponential backoff), `withCircuitBreaker` (per-strategy auto-recovery), and `withRateLimit` (token bucket) decorators — hand-rolled, no new runtime dependencies. New `CircuitBreakerOpenError` and `RateLimitExceededError` typed errors. All three compose with the existing `withBudget`/`withInstrumentation` via `compose()`.
+
 ## 0.11.0
 
 ### Minor Changes
