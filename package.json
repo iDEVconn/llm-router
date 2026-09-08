@@ -30,39 +30,74 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./gemini": {
-      "types": "./dist/gemini.d.ts",
-      "import": "./dist/gemini.js",
-      "require": "./dist/gemini.cjs"
+      "import": {
+        "types": "./dist/gemini.d.ts",
+        "default": "./dist/gemini.js"
+      },
+      "require": {
+        "types": "./dist/gemini.d.cts",
+        "default": "./dist/gemini.cjs"
+      }
     },
     "./claude": {
-      "types": "./dist/claude.d.ts",
-      "import": "./dist/claude.js",
-      "require": "./dist/claude.cjs"
+      "import": {
+        "types": "./dist/claude.d.ts",
+        "default": "./dist/claude.js"
+      },
+      "require": {
+        "types": "./dist/claude.d.cts",
+        "default": "./dist/claude.cjs"
+      }
     },
     "./grok": {
-      "types": "./dist/grok.d.ts",
-      "import": "./dist/grok.js",
-      "require": "./dist/grok.cjs"
+      "import": {
+        "types": "./dist/grok.d.ts",
+        "default": "./dist/grok.js"
+      },
+      "require": {
+        "types": "./dist/grok.d.cts",
+        "default": "./dist/grok.cjs"
+      }
     },
     "./chatgpt": {
-      "types": "./dist/chatgpt.d.ts",
-      "import": "./dist/chatgpt.js",
-      "require": "./dist/chatgpt.cjs"
+      "import": {
+        "types": "./dist/chatgpt.d.ts",
+        "default": "./dist/chatgpt.js"
+      },
+      "require": {
+        "types": "./dist/chatgpt.d.cts",
+        "default": "./dist/chatgpt.cjs"
+      }
     },
     "./deepseek": {
-      "types": "./dist/deepseek.d.ts",
-      "import": "./dist/deepseek.js",
-      "require": "./dist/deepseek.cjs"
+      "import": {
+        "types": "./dist/deepseek.d.ts",
+        "default": "./dist/deepseek.js"
+      },
+      "require": {
+        "types": "./dist/deepseek.d.cts",
+        "default": "./dist/deepseek.cjs"
+      }
     },
     "./embeddings/pgvector": {
-      "types": "./dist/embeddings/pgvector.d.ts",
-      "import": "./dist/embeddings/pgvector.js",
-      "require": "./dist/embeddings/pgvector.cjs"
+      "import": {
+        "types": "./dist/embeddings/pgvector.d.ts",
+        "default": "./dist/embeddings/pgvector.js"
+      },
+      "require": {
+        "types": "./dist/embeddings/pgvector.d.cts",
+        "default": "./dist/embeddings/pgvector.cjs"
+      }
     }
   },
   "files": [
