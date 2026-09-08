@@ -282,6 +282,15 @@ table with `id text primary key`, `embedding vector(n)`, and `metadata jsonb`
 columns — create the table and its pgvector index yourself; the adapter never
 runs DDL.
 
+`PgVectorStore` is just one `VectorStore` implementation, not a hard
+dependency on Postgres — Supabase works out of the box (it's Postgres with
+pgvector under the hood, so it's just a `Pool` pointed at a Supabase
+connection string). A different backend (Mongo Atlas Vector Search,
+Firestore vector search, Pinecone, etc.) means writing a second
+implementation of the same three-method `VectorStore` interface
+(`upsert`/`query`/`delete`) and passing it to `Retriever` — the same
+opt-in-adapter pattern as adding a new `LlmStrategy` provider.
+
 ## Error mapping
 
 The pkg throws plain `Error` subclasses so it stays framework-agnostic. Wrap at the controller boundary:
