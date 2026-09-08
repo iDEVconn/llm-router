@@ -12,6 +12,8 @@
  *   - `BudgetExceededError`         → 402 (cost budget exhausted)
  *   - `UnsupportedThinkingModeError` → 400
  *   - `InvalidThinkingConfigError`   → 400
+ *   - `InvalidGenerateOptionsError`  → 400
+ *   - `UnsupportedMultiTurnError`    → 400
  */
 
 export class UnknownProviderError extends Error {
@@ -114,5 +116,21 @@ export class InvalidThinkingConfigError extends Error {
   constructor(public readonly reason: string) {
     super(`Invalid thinking configuration: ${reason}`);
     this.name = "InvalidThinkingConfigError";
+  }
+}
+
+export class InvalidGenerateOptionsError extends Error {
+  constructor(reason: string) {
+    super(`Invalid LlmGenerateOptions: ${reason}`);
+    this.name = "InvalidGenerateOptionsError";
+  }
+}
+
+export class UnsupportedMultiTurnError extends Error {
+  constructor(public readonly providerName: string) {
+    super(
+      `${providerName} does not support multi-turn \`messages\`. Pass a single-turn \`prompt\` instead, or switch to a provider that supports multi-turn.`,
+    );
+    this.name = "UnsupportedMultiTurnError";
   }
 }

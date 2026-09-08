@@ -43,3 +43,33 @@ describe("BudgetExceededError", () => {
     expect(err.message).toMatch(/10/);
   });
 });
+
+import { InvalidGenerateOptionsError, UnsupportedMultiTurnError } from "../errors";
+
+describe("InvalidGenerateOptionsError", () => {
+  it("names the problem when both prompt and messages are set", () => {
+    const err = new InvalidGenerateOptionsError(
+      "Exactly one of `prompt` or `messages` must be set, but both were provided.",
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("InvalidGenerateOptionsError");
+    expect(err.message).toMatch(/both were provided/);
+  });
+
+  it("names the problem when neither prompt nor messages are set", () => {
+    const err = new InvalidGenerateOptionsError(
+      "Exactly one of `prompt` or `messages` must be set, but neither was provided.",
+    );
+    expect(err.message).toMatch(/neither was provided/);
+  });
+});
+
+describe("UnsupportedMultiTurnError", () => {
+  it("names the offending provider", () => {
+    const err = new UnsupportedMultiTurnError("acme-llm");
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("UnsupportedMultiTurnError");
+    expect(err.providerName).toBe("acme-llm");
+    expect(err.message).toMatch(/acme-llm/);
+  });
+});
