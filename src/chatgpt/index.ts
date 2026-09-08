@@ -1,5 +1,10 @@
 import OpenAI from "openai";
-import { LlmKeyValidationError, UnsupportedAttachmentError } from "../errors";
+import {
+  InvalidThinkingConfigError,
+  LlmKeyValidationError,
+  UnsupportedAttachmentError,
+  UnsupportedThinkingModeError,
+} from "../errors";
 import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -11,6 +16,24 @@ const SUPPORTED_IMAGE_TYPES = new Set([
   "image/gif",
   "image/webp",
 ]);
+
+type ChatGptReasoningEffort = "low" | "medium" | "high";
+const SUPPORTED_EFFORT_LEVELS = new Set<string>(["low", "medium", "high"]);
+
+function resolveReasoningEffort(
+  thinking: LlmGenerateOptions["thinking"],
+): ChatGptReasoningEffort | undefined {
+  if (!thinking) return undefined;
+  if (thinking.type !== "effort") {
+    throw new UnsupportedThinkingModeError("chatgpt", thinking.type, ["effort"]);
+  }
+  if (!SUPPORTED_EFFORT_LEVELS.has(thinking.level)) {
+    throw new InvalidThinkingConfigError(
+      `unsupported effort level "${thinking.level}"; expected one of low, medium, high`,
+    );
+  }
+  return thinking.level as ChatGptReasoningEffort;
+}
 
 export interface ChatGptStrategyOptions {
   apiKey?: string;
@@ -32,7 +55,14 @@ function toBase64(data: string | Buffer): string {
  */
 export class ChatGptStrategy implements LlmStrategy {
   readonly providerName = "chatgpt";
-  readonly capabilities = ["code", "reasoning", "vision", "multilingual"] as const;
+  readonly capabilities = [
+    "code",
+    "reasoning",
+    "vision",
+    "multilingual",
+    "streaming",
+    "thinking",
+  ] as const;
   readonly defaultModel: string;
   private platformClient: OpenAI | null = null;
   private readonly platformApiKey: string | undefined;
@@ -67,6 +97,9 @@ export class ChatGptStrategy implements LlmStrategy {
       }
     }
 
+    const reasoningEffort = resolveReasoningEffort(opts.thinking);
+    opts.signal?.throwIfAborted();
+
     const client = opts.apiKey
       ? new OpenAI({ apiKey: opts.apiKey, baseURL: this.baseURL })
       : this.getPlatformClient();
@@ -93,24 +126,82 @@ export class ChatGptStrategy implements LlmStrategy {
         ]
       : [{ role: "user" as const, content: messageContent }];
 
-    const response = await client.chat.completions.create({
-      model: modelName,
+    const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
+
+    if (opts.onToken) {
+      const stream = await client.chat.completions.create(
+        {
+          model: modelName,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          messages: messages as any,
+          stream: true,
+          stream_options: { include_usage: true },
+          ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+          ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+        },
+        requestOptions,
+      );
+
+      let text = "";
+      let model = modelName;
+      let finishReason: string | undefined;
+      let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      messages: messages as any,
-      ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
-    });
+      for await (const chunk of stream as any) {
+        if (chunk.model) model = chunk.model;
+        const delta = chunk.choices?.[0]?.delta?.content;
+        if (typeof delta === "string" && delta.length > 0) {
+          text += delta;
+          try {
+            opts.onToken(delta);
+          } catch (err) {
+            console.warn("chatgpt onToken callback threw; ignoring", err);
+          }
+        }
+        if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
+        if (chunk.usage) usage = chunk.usage;
+      }
+
+      return this.toResponse(text, model, usage, finishReason);
+    }
+
+    const response = await client.chat.completions.create(
+      {
+        model: modelName,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        messages: messages as any,
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+        ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      },
+      requestOptions,
+    );
 
     const raw = response.choices[0]?.message?.content ?? "";
     const text = typeof raw === "string" ? raw : "";
 
+    return this.toResponse(
+      text,
+      response.model,
+      response.usage,
+      response.choices[0]?.finish_reason,
+    );
+  }
+
+  private toResponse(
+    text: string,
+    model: string,
+    usage: { prompt_tokens?: number; completion_tokens?: number } | undefined,
+    finishReason: string | undefined,
+  ): LlmResponse {
     return {
       text,
-      model: response.model,
+      model,
       usage: {
-        inputTokens: response.usage?.prompt_tokens ?? 0,
-        outputTokens: response.usage?.completion_tokens ?? 0,
+        inputTokens: usage?.prompt_tokens ?? 0,
+        outputTokens: usage?.completion_tokens ?? 0,
       },
-      truncated: response.choices[0]?.finish_reason === "length",
+      truncated: finishReason === "length",
     };
   }
 

@@ -1,19 +1,35 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockMessagesCreate = vi.fn();
+const mockMessagesStream = vi.fn();
 
 vi.mock("@anthropic-ai/sdk", () => {
   class Anthropic {
-    public readonly messages: { create: typeof mockMessagesCreate };
+    public readonly messages: { create: typeof mockMessagesCreate; stream: typeof mockMessagesStream };
     constructor(public readonly opts: { apiKey: string }) {
-      this.messages = { create: mockMessagesCreate };
+      this.messages = { create: mockMessagesCreate, stream: mockMessagesStream };
     }
   }
   return { default: Anthropic };
 });
 
-import { LlmKeyValidationError } from "../errors";
+import {
+  InvalidThinkingConfigError,
+  LlmKeyValidationError,
+  UnsupportedThinkingModeError,
+} from "../errors";
 import { ClaudeStrategy } from "../claude/index";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function fakeStream(events: any[], finalMessage: any) {
+  return {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    [Symbol.asyncIterator]: async function* () {
+      for (const event of events) yield event;
+    },
+    finalMessage: () => Promise.resolve(finalMessage),
+  };
+}
 
 describe("ClaudeStrategy", () => {
   beforeEach(() => {
@@ -185,6 +201,177 @@ describe("ClaudeStrategy", () => {
 
   it("declares its capability tags", () => {
     const strategy = new ClaudeStrategy({ apiKey: "k" });
-    expect(strategy.capabilities).toEqual(["code", "reasoning", "long-context"]);
+    expect(strategy.capabilities).toEqual([
+      "code",
+      "reasoning",
+      "long-context",
+      "streaming",
+      "thinking",
+    ]);
+  });
+
+  describe("streaming", () => {
+    it("uses messages.stream and forwards deltas in order when onToken is provided", async () => {
+      const events = [
+        { type: "content_block_delta", delta: { type: "text_delta", text: "Hel" } },
+        { type: "content_block_delta", delta: { type: "text_delta", text: "lo" } },
+      ];
+      const finalMessage = {
+        content: [{ type: "text", text: "Hello" }],
+        model: "claude-haiku-4-5",
+        stop_reason: "end_turn",
+        usage: { input_tokens: 1, output_tokens: 2 },
+      };
+      mockMessagesStream.mockReturnValueOnce(fakeStream(events, finalMessage));
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+      const deltas: string[] = [];
+
+      const result = await strategy.generate({
+        prompt: "p",
+        onToken: (delta) => deltas.push(delta),
+      });
+
+      expect(mockMessagesStream).toHaveBeenCalledTimes(1);
+      expect(mockMessagesCreate).not.toHaveBeenCalled();
+      expect(deltas).toEqual(["Hel", "lo"]);
+      expect(result.text).toBe("Hello");
+      expect(result.usage).toEqual({ inputTokens: 1, outputTokens: 2 });
+    });
+
+    it("does not let a throwing onToken callback propagate out of generate()", async () => {
+      const events = [{ type: "content_block_delta", delta: { type: "text_delta", text: "x" } }];
+      const finalMessage = {
+        content: [{ type: "text", text: "x" }],
+        model: "claude-haiku-4-5",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+      mockMessagesStream.mockReturnValueOnce(fakeStream(events, finalMessage));
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      const result = await strategy.generate({
+        prompt: "p",
+        onToken: () => {
+          throw new Error("boom");
+        },
+      });
+
+      expect(result.text).toBe("x");
+    });
+  });
+
+  describe("thinking", () => {
+    it("sends an adaptive thinking config", async () => {
+      mockMessagesCreate.mockResolvedValueOnce({
+        content: [],
+        model: "m",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      });
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      await strategy.generate({ prompt: "p", thinking: { type: "adaptive" } });
+
+      expect(mockMessagesCreate.mock.calls[0]![0].thinking).toEqual({ type: "adaptive" });
+    });
+
+    it("sends a budget thinking config as thinking.enabled + budget_tokens", async () => {
+      mockMessagesCreate.mockResolvedValueOnce({
+        content: [],
+        model: "m",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      });
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        prompt: "p",
+        thinking: { type: "budget", tokens: 2000 },
+        maxTokens: 4096,
+      });
+
+      expect(mockMessagesCreate.mock.calls[0]![0].thinking).toEqual({
+        type: "enabled",
+        budget_tokens: 2000,
+      });
+    });
+
+    it("throws InvalidThinkingConfigError when budget tokens < 1024, no network call", async () => {
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      await expect(
+        strategy.generate({ prompt: "p", thinking: { type: "budget", tokens: 500 } }),
+      ).rejects.toBeInstanceOf(InvalidThinkingConfigError);
+      expect(mockMessagesCreate).not.toHaveBeenCalled();
+      expect(mockMessagesStream).not.toHaveBeenCalled();
+    });
+
+    it("throws InvalidThinkingConfigError when budget tokens >= maxTokens, no network call", async () => {
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      await expect(
+        strategy.generate({
+          prompt: "p",
+          thinking: { type: "budget", tokens: 4096 },
+          maxTokens: 4096,
+        }),
+      ).rejects.toBeInstanceOf(InvalidThinkingConfigError);
+      expect(mockMessagesCreate).not.toHaveBeenCalled();
+    });
+
+    it("throws UnsupportedThinkingModeError for effort, no network call", async () => {
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      await expect(
+        strategy.generate({ prompt: "p", thinking: { type: "effort", level: "high" } }),
+      ).rejects.toBeInstanceOf(UnsupportedThinkingModeError);
+      expect(mockMessagesCreate).not.toHaveBeenCalled();
+    });
+
+    it("extracts a thinking content block into LlmResponse.thinking", async () => {
+      mockMessagesCreate.mockResolvedValueOnce({
+        content: [
+          { type: "thinking", thinking: "reasoning..." },
+          { type: "text", text: "answer" },
+        ],
+        model: "m",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      const result = await strategy.generate({ prompt: "p", thinking: { type: "adaptive" } });
+
+      expect(result.thinking).toBe("reasoning...");
+      expect(result.text).toBe("answer");
+    });
+
+    it("leaves thinking undefined when no thinking block is present", async () => {
+      mockMessagesCreate.mockResolvedValueOnce({
+        content: [{ type: "text", text: "answer" }],
+        model: "m",
+        usage: { input_tokens: 0, output_tokens: 0 },
+      });
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      const result = await strategy.generate({ prompt: "p" });
+
+      expect(result.thinking).toBeUndefined();
+    });
+  });
+
+  describe("signal", () => {
+    it("forwards signal to the SDK call and rejects promptly when pre-aborted", async () => {
+      mockMessagesCreate.mockImplementationOnce(
+        (_params: unknown, options?: { signal?: AbortSignal }) => {
+          if (options?.signal?.aborted) return Promise.reject(new Error("aborted"));
+          return Promise.resolve({ content: [], model: "m", usage: {} });
+        },
+      );
+      const controller = new AbortController();
+      controller.abort();
+      const strategy = new ClaudeStrategy({ apiKey: "k" });
+
+      await expect(
+        strategy.generate({ prompt: "p", signal: controller.signal }),
+      ).rejects.toThrow();
+      expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    });
   });
 });

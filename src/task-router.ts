@@ -9,6 +9,8 @@ export const KNOWN_CAPABILITY_TAGS = [
   "cheap",
   "reasoning",
   "multilingual",
+  "streaming",
+  "thinking",
 ] as const;
 
 export type CapabilityTag = (typeof KNOWN_CAPABILITY_TAGS)[number];

@@ -8,7 +8,8 @@ Library-agnostic LLM router. Provider-neutral `LlmStrategy` interface + `LlmRegi
 - Subpath adapters: `@idevconn/llm-router/gemini`, `/claude`, `/grok`, `/chatgpt`, `/deepseek`. Each declares its SDK as an **optional** peer dependency, so consumers install only what they need.
 - BYOK first-class: every strategy accepts a per-call `apiKey` that overrides the platform key for that one request.
 - Platform-fallback fully optional: pass `platform: null` to `LlmRegistry` to require BYOK from every caller — useful for SaaS that doesn't subsidize AI usage.
-- Typed errors: `UnknownProviderError`, `NoPlatformProviderError`, `InvalidPlatformProviderError`, `LlmKeyValidationError`, `UnsupportedAttachmentError`, `TaskDecompositionError`, `NoAvailableProviderError`, `BudgetExceededError`. No framework-specific exceptions.
+- Streaming (`onToken`) and reasoning/thinking (`thinking`) request options, and call cancellation (`signal`) — provider-agnostic on `LlmGenerateOptions`, implemented per-provider where the underlying SDK actually supports it (see [Streaming and reasoning/thinking](#streaming-and-reasoningthinking)).
+- Typed errors: `UnknownProviderError`, `NoPlatformProviderError`, `InvalidPlatformProviderError`, `LlmKeyValidationError`, `UnsupportedAttachmentError`, `TaskDecompositionError`, `NoAvailableProviderError`, `BudgetExceededError`, `UnsupportedThinkingModeError`, `InvalidThinkingConfigError`. No framework-specific exceptions.
 - Cost control: `withBudget` decorator enforces per-call and total spend caps against a caller-supplied pricing table.
 - Instrumentation: `withInstrumentation` decorator emits a call event (usage, latency, truncation, errors) to any logger you choose.
 - Prompt injection defense: `sanitizeUntrustedContent` + `detectPromptInjection` (cheap heuristic gate) + `detectPromptInjectionWithModel` (opt-in LLM-based second opinion).
@@ -72,6 +73,55 @@ const byok = await strategy.generate({
 
 // Live key check (used in BYOK save flows)
 await strategy.validateKey(user.claudeApiKey, user.preferredModel);
+```
+
+## Streaming and reasoning/thinking
+
+`LlmGenerateOptions` has three additive fields. A strategy that doesn't
+implement one of them simply ignores it — every existing caller keeps
+working unchanged.
+
+- **`onToken?: (delta: string) => void`** — called with each incremental
+  text delta as it arrives. When set, a strategy that supports streaming
+  uses the provider's streaming endpoint internally, but still resolves
+  the same `Promise<LlmResponse>` once the stream ends. A strategy MAY
+  never invoke it (no streaming support) — don't assume it fires. A
+  throwing callback is caught and logged, never propagates out of
+  `generate()`. Keep it fast/sync-safe: it is not awaited between deltas,
+  so slow async work inside it will not backpressure the provider stream.
+- **`thinking?: {type:'adaptive'} | {type:'budget', tokens} | {type:'effort', level:'low'|'medium'|'high'}`**
+  — provider-agnostic reasoning-depth request. Check the `'thinking'`
+  capability tag before requesting it, or catch
+  `UnsupportedThinkingModeError`. `budget.tokens`/`effort.level` are
+  runtime-validated against allow-lists before any network call — an
+  out-of-range or unsupported value throws `InvalidThinkingConfigError`
+  or `UnsupportedThinkingModeError` up front, never silently downgraded.
+- **`signal?: AbortSignal`** — cancels the call, including an open stream.
+
+`LlmResponse.thinking?: string` carries a returned reasoning trace, when
+the provider returned one. **Treat it exactly like `response.text` —
+untrusted model output.** Never re-feed it into another prompt (e.g. a
+"show your reasoning" UI that summarizes it via another LLM call) without
+running it through `sanitizeUntrustedContent`/`detectPromptInjection` first.
+
+Per-provider support (check `strategy.capabilities` for `'streaming'`/`'thinking'`):
+
+| Provider | Streaming | Thinking |
+|---|---|---|
+| Claude | ✅ `messages.stream()` | `adaptive`, `budget` (`budget_tokens` ≥1024 and < `maxTokens`). `effort` unsupported. |
+| Gemini | ✅ both connection modes | **Vertex only** (`GeminiStrategy({ connection: "vertex" })`) — `adaptive`, `budget`. The direct API SDK has no thinking support at all; any `thinking` request on that connection throws `UnsupportedThinkingModeError`. |
+| ChatGPT | ✅ `stream:true` | `effort` only (`reasoning_effort`). Chat Completions never returns a reasoning trace — `response.thinking` is always `undefined` for this strategy. |
+| Grok | ✅ `stream:true` | **Not implemented.** xAI's reasoning-effort parameter contract could not be verified against primary documentation — any `thinking` request throws `UnsupportedThinkingModeError` until this is confirmed against docs.x.ai. |
+| DeepSeek | ✅ `stream:true` | **Not implemented as a request option**, same reason as Grok. `deepseek-reasoner`'s `reasoning_content` is instead surfaced passively via `response.thinking` whenever the model returns it — inherent to the model, not caller-controlled. |
+
+```ts
+const stream = await strategy.generate({
+  prompt: "Explain quantum entanglement.",
+  onToken: (delta) => process.stdout.write(delta),
+  thinking: { type: "budget", tokens: 2048 },
+  signal: abortController.signal,
+});
+console.log(stream.thinking); // reasoning trace, if the provider returned one
 ```
 
 ## Adding a custom provider
@@ -245,6 +295,8 @@ try {
   if (err instanceof NoPlatformProviderError) throw new BadRequestException(err.message);
   if (err instanceof LlmKeyValidationError) throw new BadRequestException(err.message);
   if (err instanceof UnsupportedAttachmentError) throw new BadRequestException(err.message);
+  if (err instanceof UnsupportedThinkingModeError) throw new BadRequestException(err.message);
+  if (err instanceof InvalidThinkingConfigError) throw new BadRequestException(err.message);
   if (err instanceof BudgetExceededError) throw new HttpException(err.message, 402);
   throw err;
 }

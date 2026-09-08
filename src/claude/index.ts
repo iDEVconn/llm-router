@@ -1,5 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { LlmKeyValidationError } from "../errors";
+import {
+  InvalidThinkingConfigError,
+  LlmKeyValidationError,
+  UnsupportedThinkingModeError,
+} from "../errors";
 import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
 
 const SUPPORTED_IMAGE_TYPES = new Set([
@@ -33,7 +37,13 @@ function toBase64(data: string | Buffer): string {
  */
 export class ClaudeStrategy implements LlmStrategy {
   readonly providerName = "claude";
-  readonly capabilities = ["code", "reasoning", "long-context"] as const;
+  readonly capabilities = [
+    "code",
+    "reasoning",
+    "long-context",
+    "streaming",
+    "thinking",
+  ] as const;
   readonly defaultModel: string;
   private platformClient: Anthropic | null = null;
   private readonly platformApiKey: string | undefined;
@@ -60,6 +70,8 @@ export class ClaudeStrategy implements LlmStrategy {
       ? new Anthropic({ apiKey: opts.apiKey })
       : this.getPlatformClient();
     const modelName = opts.model?.trim() || this.defaultModel;
+    const maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    const thinking = this.resolveThinking(opts.thinking, maxTokens);
 
     type ContentBlock =
       | { type: "text"; text: string }
@@ -91,9 +103,9 @@ export class ClaudeStrategy implements LlmStrategy {
 
     content.push({ type: "text", text: opts.prompt });
 
-    const response = await client.messages.create({
+    const params = {
       model: modelName,
-      max_tokens: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: maxTokens,
       // `cache_control: ephemeral` on the system block lets Anthropic cache
       // it server-side, so repeated calls that reuse the same systemPrompt
       // (the common case — a report-generation instruction set called many
@@ -110,16 +122,72 @@ export class ClaudeStrategy implements LlmStrategy {
             ],
           }
         : {}),
+      ...(thinking ? { thinking } : {}),
       // Anthropic's SDK types accept the broader union; cast here so the
       // pkg compiles without pulling in the entire Anthropic.Messages
       // type surface as a public dep.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      messages: [{ role: "user", content: content as any }],
-    });
+      messages: [{ role: "user" as const, content: content as any }],
+    };
+    const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
 
+    if (opts.onToken) {
+      const stream = client.messages.stream(params, requestOptions);
+      for await (const event of stream) {
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          this.safeOnToken(opts.onToken, event.delta.text);
+        }
+      }
+      const finalMessage = await stream.finalMessage();
+      return this.buildResponse(finalMessage);
+    }
+
+    const response = await client.messages.create(params, requestOptions);
+    return this.buildResponse(response);
+  }
+
+  private resolveThinking(
+    thinking: LlmGenerateOptions["thinking"],
+    maxTokens: number,
+  ): Anthropic.ThinkingConfigParam | undefined {
+    if (!thinking) return undefined;
+    if (thinking.type === "adaptive") return { type: "adaptive" };
+    if (thinking.type === "budget") {
+      if (thinking.tokens < 1024) {
+        throw new InvalidThinkingConfigError(
+          `budget.tokens must be >= 1024 (got ${thinking.tokens}).`,
+        );
+      }
+      if (thinking.tokens >= maxTokens) {
+        throw new InvalidThinkingConfigError(
+          `budget.tokens (${thinking.tokens}) must be less than maxTokens (${maxTokens}).`,
+        );
+      }
+      return { type: "enabled", budget_tokens: thinking.tokens };
+    }
+    throw new UnsupportedThinkingModeError(this.providerName, thinking.type, [
+      "adaptive",
+      "budget",
+    ]);
+  }
+
+  private safeOnToken(onToken: (delta: string) => void, delta: string): void {
+    try {
+      onToken(delta);
+    } catch (err) {
+      console.warn("ClaudeStrategy: onToken callback threw", err);
+    }
+  }
+
+  private buildResponse(response: Anthropic.Message): LlmResponse {
     const text = response.content
       .filter((block): block is Anthropic.TextBlock => block.type === "text")
       .map((block) => block.text)
+      .join("");
+
+    const thinkingText = response.content
+      .filter((block): block is Anthropic.ThinkingBlock => block.type === "thinking")
+      .map((block) => block.thinking)
       .join("");
 
     return {
@@ -130,6 +198,7 @@ export class ClaudeStrategy implements LlmStrategy {
         outputTokens: response.usage.output_tokens ?? 0,
       },
       truncated: response.stop_reason === "max_tokens",
+      thinking: thinkingText.length > 0 ? thinkingText : undefined,
     };
   }
 

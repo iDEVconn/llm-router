@@ -57,6 +57,21 @@ describe("withInstrumentation", () => {
     expect(event.error).toBe("boom");
     expect(typeof event.latencyMs).toBe("number");
   });
+
+  it("forwards onToken, thinking, and signal to the wrapped strategy unmodified", async () => {
+    const strategy = makeStrategy();
+    const wrapped = withInstrumentation(strategy, { onCall: vi.fn() });
+    const onToken = vi.fn();
+    const controller = new AbortController();
+    const thinking = { type: "adaptive" as const };
+
+    await wrapped.generate({ prompt: "hi", onToken, thinking, signal: controller.signal });
+
+    const passedOpts = (strategy.generate as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(passedOpts.onToken).toBe(onToken);
+    expect(passedOpts.thinking).toBe(thinking);
+    expect(passedOpts.signal).toBe(controller.signal);
+  });
 });
 
 describe("compose", () => {

@@ -28,6 +28,46 @@ export interface LlmGenerateOptions {
   apiKey?: string;
   /** Maximum output tokens. Provider-specific defaults apply when omitted. */
   maxTokens?: number;
+  /**
+   * Called with each incremental text delta as it arrives. When provided,
+   * a strategy that supports streaming uses the provider's streaming
+   * endpoint internally instead of a single blocking call, but still
+   * resolves the same `Promise<LlmResponse>` once the stream ends — this
+   * is an additive side-channel, not an alternate return type. A strategy
+   * MAY silently never invoke this (no streaming support) — callers must
+   * never assume `onToken` fires at all; only the resolved `LlmResponse`
+   * is guaranteed.
+   */
+  onToken?: (delta: string) => void;
+  /**
+   * Provider-agnostic reasoning-depth request. Not every provider/model
+   * supports every variant — a strategy that receives a variant it cannot
+   * honor MUST throw `UnsupportedThinkingModeError` (same philosophy as
+   * `UnsupportedAttachmentError`: fail loudly up front, never silently
+   * downgrade a caller's explicit request). Use `capabilities`
+   * (`'thinking'` tag) to check support before requesting it, or catch
+   * the typed error.
+   *
+   *  - `adaptive`: let the provider pick reasoning depth automatically
+   *    (Anthropic `thinking.type=adaptive`; Gemini dynamic thinking
+   *    budget `-1`).
+   *  - `budget`: explicit token reservation for reasoning (Anthropic
+   *    `thinking.type=enabled` + `budget_tokens`; Gemini
+   *    `thinkingConfig.thinkingBudget`).
+   *  - `effort`: coarse effort level, for providers/models that expose
+   *    reasoning as an enum rather than a token count (OpenAI
+   *    reasoning-capable models via `reasoning_effort`).
+   */
+  thinking?:
+    | { type: "adaptive" }
+    | { type: "budget"; tokens: number }
+    | { type: "effort"; level: "low" | "medium" | "high" };
+  /**
+   * Aborts the call (and the underlying stream, if one is open). Without
+   * this, a caller that disconnects leaks an open provider connection and
+   * keeps burning tokens server-side with nowhere for the output to go.
+   */
+  signal?: AbortSignal;
 }
 
 export interface LlmUsage {
@@ -50,6 +90,16 @@ export interface LlmResponse {
    * `finish_reason`) rather than guessing from token counts.
    */
   truncated: boolean;
+  /**
+   * Reasoning/thinking trace text, if the provider returned one and
+   * `thinking` was requested (or the model always includes one, e.g.
+   * DeepSeek's `deepseek-reasoner` `reasoning_content`). Undefined when
+   * not applicable — never an empty string standing in for "none."
+   * SECURITY: treat this exactly like `text` — untrusted model output.
+   * Never re-feed it into another prompt without running it through
+   * `sanitizeUntrustedContent`/`detectPromptInjection` first.
+   */
+  thinking?: string;
 }
 
 /**
