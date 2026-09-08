@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { BudgetExceededError, NoAvailableProviderError, TaskDecompositionError } from "../errors";
+import {
+  BudgetExceededError,
+  InvalidGenerateOptionsError,
+  NoAvailableProviderError,
+  TaskDecompositionError,
+  UnsupportedMultiTurnError,
+} from "../errors";
 
 describe("TaskDecompositionError", () => {
   it("wraps an Error cause with its message", () => {
@@ -43,8 +49,6 @@ describe("BudgetExceededError", () => {
     expect(err.message).toMatch(/10/);
   });
 });
-
-import { InvalidGenerateOptionsError, UnsupportedMultiTurnError } from "../errors";
 
 describe("InvalidGenerateOptionsError", () => {
   it("names the problem when both prompt and messages are set", () => {
