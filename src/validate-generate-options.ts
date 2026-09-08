@@ -22,4 +22,9 @@ export function assertExactlyOnePromptSource(
       "Exactly one of `prompt` or `messages` must be set, but neither was provided.",
     );
   }
+  if (hasMessages && opts.messages!.length === 0) {
+    throw new InvalidGenerateOptionsError(
+      "`messages` must contain at least one turn.",
+    );
+  }
 }

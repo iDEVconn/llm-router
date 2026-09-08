@@ -25,4 +25,10 @@ describe("assertExactlyOnePromptSource", () => {
   it("throws InvalidGenerateOptionsError when neither prompt nor messages are set", () => {
     expect(() => assertExactlyOnePromptSource({})).toThrow(InvalidGenerateOptionsError);
   });
+
+  it("throws InvalidGenerateOptionsError when messages is an empty array", () => {
+    expect(() => assertExactlyOnePromptSource({ messages: [] })).toThrow(
+      InvalidGenerateOptionsError,
+    );
+  });
 });
