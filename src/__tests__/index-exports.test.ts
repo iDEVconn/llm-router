@@ -1,23 +1,28 @@
 import { describe, expect, it } from "vitest";
 import {
   BudgetExceededError,
+  CircuitBreakerOpenError,
   InvalidGenerateOptionsError,
   InvalidThinkingConfigError,
   KNOWN_CAPABILITY_TAGS,
   NoAvailableProviderError,
   Orchestrator,
+  RateLimitExceededError,
+  Retriever,
   TaskDecompositionError,
   TaskRouter,
   UnsupportedMultiTurnError,
   UnsupportedThinkingModeError,
   calculateCost,
   compose,
-  Retriever,
   detectPromptInjection,
   detectPromptInjectionWithModel,
   sanitizeUntrustedContent,
   withBudget,
+  withCircuitBreaker,
   withInstrumentation,
+  withRateLimit,
+  withRetry,
 } from "../index";
 import type { LlmMessage } from "../index";
 
@@ -70,5 +75,13 @@ describe("public exports", () => {
     expect(typeof UnsupportedMultiTurnError).toBe("function");
     expect(typeof UnsupportedThinkingModeError).toBe("function");
     expect(typeof InvalidThinkingConfigError).toBe("function");
+  });
+
+  it("exports the resilience decorators and their errors", () => {
+    expect(typeof withRetry).toBe("function");
+    expect(typeof withCircuitBreaker).toBe("function");
+    expect(typeof withRateLimit).toBe("function");
+    expect(typeof CircuitBreakerOpenError).toBe("function");
+    expect(typeof RateLimitExceededError).toBe("function");
   });
 });
