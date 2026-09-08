@@ -4,9 +4,11 @@ import {
   LlmKeyValidationError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { assertExactlyOnePromptSource } from "../validate-generate-options";
 import type {
   LlmAttachment,
   LlmGenerateOptions,
+  LlmMessage,
   LlmResponse,
   LlmStrategy,
 } from "../types";
@@ -46,13 +48,36 @@ function toBase64(data: string | Buffer): string {
 }
 
 function buildParts(opts: LlmGenerateOptions): GeminiPart[] {
-  const parts: GeminiPart[] = [{ text: opts.prompt }];
+  const parts: GeminiPart[] = [{ text: opts.prompt! }];
   for (const attachment of opts.attachments ?? []) {
     parts.push({
       inlineData: { mimeType: attachment.mimetype, data: toBase64(attachment.data) },
     });
   }
   return parts;
+}
+
+type GeminiContent = { role: string; parts: GeminiPart[] };
+
+function toGeminiRole(role: LlmMessage["role"]): "user" | "model" {
+  return role === "assistant" ? "model" : "user";
+}
+
+function buildContents(opts: LlmGenerateOptions): GeminiContent[] {
+  const history = opts.messages as LlmMessage[];
+  const contents: GeminiContent[] = history.map((message) => ({
+    role: toGeminiRole(message.role),
+    parts: [{ text: message.content }],
+  }));
+  const last = contents[contents.length - 1];
+  if (last) {
+    for (const attachment of opts.attachments ?? []) {
+      last.parts.push({
+        inlineData: { mimeType: attachment.mimetype, data: toBase64(attachment.data) },
+      });
+    }
+  }
+  return contents;
 }
 
 function forwardDelta(onToken: ((delta: string) => void) | undefined, delta: string): void {
@@ -201,6 +226,8 @@ export class GeminiStrategy implements LlmStrategy {
   }
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
+    assertExactlyOnePromptSource(opts);
+
     if (opts.signal?.aborted) {
       throw opts.signal.reason ?? new Error("gemini request aborted before it started");
     }
@@ -231,11 +258,13 @@ export class GeminiStrategy implements LlmStrategy {
       ...(opts.systemPrompt ? { systemInstruction: opts.systemPrompt } : {}),
     });
 
-    const parts = buildParts(opts);
     const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
+    const requestPayload: GeminiPart[] | { contents: GeminiContent[] } = opts.messages
+      ? { contents: buildContents(opts) }
+      : buildParts(opts);
 
     if (opts.onToken) {
-      const result = await model.generateContentStream(parts, requestOptions);
+      const result = await model.generateContentStream(requestPayload, requestOptions);
       for await (const chunk of result.stream) {
         forwardDelta(opts.onToken, chunk.text());
       }
@@ -243,7 +272,7 @@ export class GeminiStrategy implements LlmStrategy {
       return buildDirectResponse(finalResponse, modelName);
     }
 
-    const result = await model.generateContent(parts, requestOptions);
+    const result = await model.generateContent(requestPayload, requestOptions);
 
     // Token usage may live on `response.usageMetadata` or on the top-level
     // `result.usageMetadata` depending on the SDK version; check both.
@@ -281,8 +310,9 @@ export class GeminiStrategy implements LlmStrategy {
       ...(location ? { location } : {}),
     });
 
-    const parts = buildParts(opts);
-    const contents = [{ role: "user", parts }];
+    const contents: GeminiContent[] = opts.messages
+      ? buildContents(opts)
+      : [{ role: "user", parts: buildParts(opts) }];
 
     // Validate/build thinking config before any network call — a rejected
     // config must never reach the SDK.

@@ -15,7 +15,12 @@ vi.mock("openai", () => {
   return { default: OpenAI };
 });
 
-import { LlmKeyValidationError, UnsupportedAttachmentError, UnsupportedThinkingModeError } from "../errors";
+import {
+  InvalidGenerateOptionsError,
+  LlmKeyValidationError,
+  UnsupportedAttachmentError,
+  UnsupportedThinkingModeError,
+} from "../errors";
 import { DeepSeekStrategy } from "../deepseek/index";
 
 function asyncIterableFrom<T>(items: T[]): AsyncIterable<T> {
@@ -248,5 +253,75 @@ describe("DeepSeekStrategy", () => {
 
     await expect(strategy.generate({ prompt: "p", signal: controller.signal })).rejects.toThrow();
     expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
+  });
+
+  describe("messages (multi-turn)", () => {
+    it("builds a multi-turn messages array from 2+ turns", async () => {
+      mockChatCompletionsCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: "ok" } }],
+        model: "deepseek-chat",
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      });
+      const strategy = new DeepSeekStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "second" },
+          { role: "user", content: "third" },
+        ],
+      });
+
+      const call = mockChatCompletionsCreate.mock.calls[0]![0];
+      expect(call.messages).toEqual([
+        { role: "user", content: "first" },
+        { role: "assistant", content: "second" },
+        { role: "user", content: "third" },
+      ]);
+    });
+
+    it("prepends the systemPrompt as a leading system message in multi-turn mode too", async () => {
+      mockChatCompletionsCreate.mockResolvedValueOnce({
+        choices: [{ message: { content: "ok" } }],
+        model: "deepseek-chat",
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      });
+      const strategy = new DeepSeekStrategy({ apiKey: "k" });
+
+      await strategy.generate({
+        messages: [{ role: "user", content: "first" }],
+        systemPrompt: "Be concise.",
+      });
+
+      const call = mockChatCompletionsCreate.mock.calls[0]![0];
+      expect(call.messages).toEqual([
+        { role: "system", content: "Be concise." },
+        { role: "user", content: "first" },
+      ]);
+    });
+
+    it("still rejects attachments in multi-turn mode (no vision endpoint)", async () => {
+      const strategy = new DeepSeekStrategy({ apiKey: "k" });
+      await expect(
+        strategy.generate({
+          messages: [{ role: "user", content: "first" }],
+          attachments: [{ data: Buffer.from("img"), mimetype: "image/png" }],
+        }),
+      ).rejects.toBeInstanceOf(UnsupportedAttachmentError);
+    });
+
+    it("throws InvalidGenerateOptionsError when both prompt and messages are set", async () => {
+      const strategy = new DeepSeekStrategy({ apiKey: "k" });
+      await expect(
+        strategy.generate({ prompt: "p", messages: [{ role: "user", content: "m" }] }),
+      ).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
+    });
+
+    it("throws InvalidGenerateOptionsError when neither prompt nor messages are set", async () => {
+      const strategy = new DeepSeekStrategy({ apiKey: "k" });
+      await expect(strategy.generate({})).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
+    });
   });
 });

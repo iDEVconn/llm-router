@@ -4,7 +4,8 @@ import {
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
 } from "../errors";
-import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
+import { assertExactlyOnePromptSource } from "../validate-generate-options";
+import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const FALLBACK_DEFAULT_MODEL = "grok-4.3";
@@ -65,6 +66,8 @@ export class GrokStrategy implements LlmStrategy {
   }
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
+    assertExactlyOnePromptSource(opts);
+
     for (const attachment of opts.attachments ?? []) {
       if (!SUPPORTED_IMAGE_TYPES.has(attachment.mimetype)) {
         throw new UnsupportedAttachmentError(
@@ -89,19 +92,40 @@ export class GrokStrategy implements LlmStrategy {
       : this.getPlatformClient();
     const modelName = opts.model?.trim() || this.defaultModel;
 
-    const messageContent: Array<
+    type ChatContentPart =
       | { type: "text"; text: string }
-      | { type: "image_url"; image_url: { url: string; detail: "high" | "low" | "auto" } }
-    > = [];
+      | { type: "image_url"; image_url: { url: string; detail: "high" | "low" | "auto" } };
 
-    for (const attachment of opts.attachments ?? []) {
+    const attachmentParts: ChatContentPart[] = (opts.attachments ?? []).map((attachment) => {
       const data = toBase64(attachment.data);
-      messageContent.push({
+      return {
         type: "image_url",
         image_url: { url: `data:${attachment.mimetype};base64,${data}`, detail: "high" },
+      };
+    });
+
+    type ChatMessage = { role: "system" | "user" | "assistant"; content: string | ChatContentPart[] };
+    const turns: ChatMessage[] = [];
+
+    if (opts.messages) {
+      const history = opts.messages as LlmMessage[];
+      history.forEach((message, index) => {
+        const isLast = index === history.length - 1;
+        if (isLast && attachmentParts.length > 0) {
+          turns.push({
+            role: message.role,
+            content: [...attachmentParts, { type: "text", text: message.content }],
+          });
+        } else {
+          turns.push({ role: message.role, content: message.content });
+        }
+      });
+    } else {
+      turns.push({
+        role: "user",
+        content: [...attachmentParts, { type: "text", text: opts.prompt! }],
       });
     }
-    messageContent.push({ type: "text", text: opts.prompt });
 
     // A leading system-role message is the correct OpenAI-wire-format shape
     // for stable instructions. It also positions the request to benefit
@@ -110,11 +134,8 @@ export class GrokStrategy implements LlmStrategy {
     // transparently) — no explicit cache API is documented for xAI, so
     // this is a structural best-effort, not a guaranteed cost saving.
     const messages = opts.systemPrompt
-      ? [
-          { role: "system" as const, content: opts.systemPrompt },
-          { role: "user" as const, content: messageContent },
-        ]
-      : [{ role: "user" as const, content: messageContent }];
+      ? [{ role: "system" as const, content: opts.systemPrompt }, ...turns]
+      : turns;
 
     const body = {
       model: modelName,

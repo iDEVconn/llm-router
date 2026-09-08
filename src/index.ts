@@ -1,17 +1,22 @@
 export { LlmRegistry } from "./registry";
 export {
   BudgetExceededError,
+  InvalidGenerateOptionsError,
   InvalidPlatformProviderError,
+  InvalidThinkingConfigError,
   LlmKeyValidationError,
   NoAvailableProviderError,
   NoPlatformProviderError,
   TaskDecompositionError,
   UnknownProviderError,
   UnsupportedAttachmentError,
+  UnsupportedMultiTurnError,
+  UnsupportedThinkingModeError,
 } from "./errors";
 export type {
   LlmAttachment,
   LlmGenerateOptions,
+  LlmMessage,
   LlmModelInfo,
   LlmProviderInfo,
   LlmResponse,

@@ -4,7 +4,8 @@ import {
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
 } from "../errors";
-import type { LlmGenerateOptions, LlmResponse, LlmStrategy } from "../types";
+import { assertExactlyOnePromptSource } from "../validate-generate-options";
+import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 const FALLBACK_DEFAULT_MODEL = "deepseek-chat";
@@ -87,6 +88,8 @@ export class DeepSeekStrategy implements LlmStrategy {
   }
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
+    assertExactlyOnePromptSource(opts);
+
     const attachments = opts.attachments ?? [];
     if (attachments.length > 0) {
       throw new UnsupportedAttachmentError(
@@ -112,12 +115,17 @@ export class DeepSeekStrategy implements LlmStrategy {
       : this.getPlatformClient();
     const modelName = opts.model?.trim() || this.defaultModel;
 
-    const messages = opts.systemPrompt
-      ? [
-          { role: "system" as const, content: opts.systemPrompt },
-          { role: "user" as const, content: opts.prompt },
-        ]
-      : [{ role: "user" as const, content: opts.prompt }];
+    type DeepSeekMessage = { role: "system" | "user" | "assistant"; content: string };
+    const turns: DeepSeekMessage[] = opts.messages
+      ? (opts.messages as LlmMessage[]).map((message) => ({
+          role: message.role,
+          content: message.content,
+        }))
+      : [{ role: "user", content: opts.prompt! }];
+
+    const messages: DeepSeekMessage[] = opts.systemPrompt
+      ? [{ role: "system", content: opts.systemPrompt }, ...turns]
+      : turns;
 
     const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
 
