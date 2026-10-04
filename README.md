@@ -178,7 +178,8 @@ account for the tokens spent:
   practice: Claude reports input tokens on `message_start` but output
   tokens only near the end; Gemini attaches `usageMetadata` to stream
   chunks when the server sends it; ChatGPT/Grok/DeepSeek report usage only
-  in the final chunk, so a mid-stream abort is always estimated.
+  in the final chunk, so a mid-stream abort is almost always estimated
+  (usage is reported only if that final usage chunk had already arrived).
   Provider-reported numbers mean the same as on a normal response: Claude's
   `message_start` `input_tokens` excludes cache read/creation tokens, and
   Gemini's `candidatesTokenCount` excludes thought tokens. Only an
@@ -194,7 +195,7 @@ Use `instanceof LlmAbortedError` for the typed check. Non-streaming calls,
 calls aborted before the request starts (these throw the plain
 `signal.reason`, as before), and non-abort errors are unchanged. An abort
 that lands after the provider already signalled completion (e.g. a
-`finish_reason` arrived) resolves normally with the full response.
+`finish_reason` arrived) resolves normally with the full response (usage may be unreported).
 
 **`partialText` and `partialThinking` are untrusted model output, exactly
 like `response.text`/`response.thinking`.** Never re-feed them into another
