@@ -1,9 +1,11 @@
 import OpenAI from "openai";
 import {
+  LlmAbortedError,
   LlmKeyValidationError,
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { resolveAbortUsage, type ReportedUsage } from "../usage-estimate";
 import { assertExactlyOnePromptSource } from "../validate-generate-options";
 import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
@@ -130,45 +132,65 @@ export class DeepSeekStrategy implements LlmStrategy {
     const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
 
     if (opts.onToken) {
-      const stream = await client.chat.completions.create(
-        {
-          model: modelName,
-          messages,
-          stream: true,
-          stream_options: { include_usage: true },
-          ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
-        },
-        requestOptions,
-      );
-
       let text = "";
       let reasoning = "";
-      let model = modelName;
-      let inputTokens = 0;
-      let outputTokens = 0;
-      let truncated = false;
+      const reported: ReportedUsage = {};
+      try {
+        const stream = await client.chat.completions.create(
+          {
+            model: modelName,
+            messages,
+            stream: true,
+            stream_options: { include_usage: true },
+            ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+          },
+          requestOptions,
+        );
 
-      for await (const chunk of stream as AsyncIterable<DeepSeekStreamChunk>) {
-        const choice = chunk.choices?.[0];
-        const delta = choice?.delta;
-        if (delta?.content) {
-          text += delta.content;
-          try {
-            opts.onToken(delta.content);
-          } catch (err) {
-            console.warn("llm-router: deepseek onToken callback threw", err);
+        let model = modelName;
+        let inputTokens = 0;
+        let outputTokens = 0;
+        let truncated = false;
+
+        for await (const chunk of stream as AsyncIterable<DeepSeekStreamChunk>) {
+          const choice = chunk.choices?.[0];
+          const delta = choice?.delta;
+          if (delta?.content) {
+            text += delta.content;
+            try {
+              opts.onToken(delta.content);
+            } catch (err) {
+              console.warn("llm-router: deepseek onToken callback threw", err);
+            }
+          }
+          if (delta?.reasoning_content) reasoning += delta.reasoning_content;
+          if (choice?.finish_reason === "length") truncated = true;
+          if (chunk.model) model = chunk.model;
+          if (chunk.usage) {
+            inputTokens = chunk.usage.prompt_tokens ?? 0;
+            outputTokens = chunk.usage.completion_tokens ?? 0;
+            reported.inputTokens = chunk.usage.prompt_tokens;
+            reported.outputTokens = chunk.usage.completion_tokens;
           }
         }
-        if (delta?.reasoning_content) reasoning += delta.reasoning_content;
-        if (choice?.finish_reason === "length") truncated = true;
-        if (chunk.model) model = chunk.model;
-        if (chunk.usage) {
-          inputTokens = chunk.usage.prompt_tokens ?? 0;
-          outputTokens = chunk.usage.completion_tokens ?? 0;
-        }
-      }
 
-      return shapeResponse(text, model, inputTokens, outputTokens, truncated, reasoning || undefined);
+        return shapeResponse(text, model, inputTokens, outputTokens, truncated, reasoning || undefined);
+      } catch (err) {
+        // DeepSeek (OpenAI-compatible) reports usage only in the final
+        // chunk, so an abort mid-stream almost always falls back to the
+        // rough estimate (reasoning deltas count toward the output side).
+        if (opts.signal?.aborted) {
+          const partialThinking = reasoning || undefined;
+          throw new LlmAbortedError({
+            providerName: this.providerName,
+            partialText: text,
+            partialThinking,
+            cause: err,
+            ...resolveAbortUsage(reported, opts, text, partialThinking),
+          });
+        }
+        throw err;
+      }
     }
 
     const response: DeepSeekCompletion = await client.chat.completions.create(

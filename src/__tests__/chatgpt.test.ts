@@ -18,6 +18,7 @@ vi.mock("openai", () => {
 import {
   InvalidGenerateOptionsError,
   InvalidThinkingConfigError,
+  LlmAbortedError,
   LlmKeyValidationError,
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
@@ -393,5 +394,134 @@ describe("ChatGptStrategy", () => {
       await expect(strategy.generate({})).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
       expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("ChatGptStrategy streaming abort", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const chunk = (content: string) => ({ choices: [{ delta: { content } }] });
+
+  async function* abortingChunks(chunks: unknown[], controller: AbortController, abortErr: unknown) {
+    for (const c of chunks) yield c;
+    controller.abort();
+    throw abortErr;
+  }
+
+  async function runAborted(
+    chunks: unknown[],
+    extra: Partial<Parameters<ChatGptStrategy["generate"]>[0]> = {},
+  ) {
+    const controller = new AbortController();
+    // Mirrors the openai SDK: APIUserAbortError is a plain Error subclass (name "Error").
+    const abortErr = new Error("Request was aborted.");
+    mockChatCompletionsCreate.mockResolvedValueOnce(abortingChunks(chunks, controller, abortErr));
+    const deltas: string[] = [];
+    const err = await new ChatGptStrategy({ apiKey: "k" })
+      .generate({
+        prompt: "12345678",
+        systemPrompt: "abcd",
+        onToken: (d) => deltas.push(d),
+        signal: controller.signal,
+        ...extra,
+      })
+      .catch((e: unknown) => e);
+    return { err: err as LlmAbortedError, deltas, abortErr };
+  }
+
+  it("rejects with LlmAbortedError carrying the delivered deltas, estimated usage and the original error", async () => {
+    const { err, deltas, abortErr } = await runAborted([chunk("Hel"), chunk("lo")]);
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("AbortError");
+    expect(err.cause).toBe(abortErr);
+    expect(err.partialText).toBe("Hello");
+    expect(err.partialText).toBe(deltas.join(""));
+    // Usage only arrives in the final chunk → always estimated mid-stream:
+    // input (8 + 4 chars) / 4 = 3, output 5 chars / 4 → 2.
+    expect(err.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+    expect(err.usageEstimated).toBe(true);
+    expect(err.message).toBe("chatgpt request aborted (5 chars received)");
+  });
+
+  it("uses provider-reported usage when the final usage chunk already arrived", async () => {
+    const { err } = await runAborted([
+      chunk("Hi"),
+      { choices: [], usage: { prompt_tokens: 30, completion_tokens: 9 } },
+    ]);
+    expect(err.usage).toEqual({ inputTokens: 30, outputTokens: 9 });
+    expect(err.usageEstimated).toBe(false);
+  });
+
+  it("an abort while opening the stream gives partialText '' and usage estimated from the prompt", async () => {
+    const controller = new AbortController();
+    const abortErr = new Error("Request was aborted.");
+    mockChatCompletionsCreate.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.reject(abortErr);
+    });
+    const err = await new ChatGptStrategy({ apiKey: "k" })
+      .generate({ prompt: "12345678", onToken: () => {}, signal: controller.signal })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect((err as LlmAbortedError).cause).toBe(abortErr);
+    expect((err as LlmAbortedError).partialText).toBe("");
+    expect((err as LlmAbortedError).usage).toEqual({ inputTokens: 2, outputTokens: 0 });
+    expect((err as LlmAbortedError).usageEstimated).toBe(true);
+  });
+
+  it("keeps a delta whose onToken callback threw in partialText", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { err } = await runAborted([chunk("A"), chunk("B")], {
+      onToken: (d) => {
+        if (d === "B") throw new Error("consumer bug");
+      },
+    });
+    expect(err.partialText).toBe("AB");
+    warn.mockRestore();
+  });
+
+  it("does not wrap a non-abort mid-stream error", async () => {
+    const boom = new Error("socket hang up");
+    mockChatCompletionsCreate.mockResolvedValueOnce(
+      (async function* () {
+        yield chunk("Hel");
+        throw boom;
+      })(),
+    );
+    await expect(
+      new ChatGptStrategy({ apiKey: "k" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toBe(boom);
+  });
+
+  it("leaves a non-streaming abort unchanged", async () => {
+    const controller = new AbortController();
+    const abortErr = new Error("Request was aborted.");
+    mockChatCompletionsCreate.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.reject(abortErr);
+    });
+    await expect(
+      new ChatGptStrategy({ apiKey: "k" }).generate({ prompt: "p", signal: controller.signal }),
+    ).rejects.toBe(abortErr);
+  });
+
+  it("leaves the pre-start abort check unchanged for a streaming call (plain reason, no SDK call)", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      new ChatGptStrategy({ apiKey: "k" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(controller.signal.reason);
+    expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
   });
 });

@@ -1,10 +1,12 @@
 import OpenAI from "openai";
 import {
   InvalidThinkingConfigError,
+  LlmAbortedError,
   LlmKeyValidationError,
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { resolveAbortUsage } from "../usage-estimate";
 import { assertExactlyOnePromptSource } from "../validate-generate-options";
 import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
@@ -150,41 +152,60 @@ export class ChatGptStrategy implements LlmStrategy {
     const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
 
     if (opts.onToken) {
-      const stream = await client.chat.completions.create(
-        {
-          model: modelName,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          messages: messages as any,
-          stream: true,
-          stream_options: { include_usage: true },
-          ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
-          ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
-        },
-        requestOptions,
-      );
-
       let text = "";
-      let model = modelName;
-      let finishReason: string | undefined;
       let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+      try {
+        const stream = await client.chat.completions.create(
+          {
+            model: modelName,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            messages: messages as any,
+            stream: true,
+            stream_options: { include_usage: true },
+            ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+            ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+          },
+          requestOptions,
+        );
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      for await (const chunk of stream as any) {
-        if (chunk.model) model = chunk.model;
-        const delta = chunk.choices?.[0]?.delta?.content;
-        if (typeof delta === "string" && delta.length > 0) {
-          text += delta;
-          try {
-            opts.onToken(delta);
-          } catch (err) {
-            console.warn("chatgpt onToken callback threw; ignoring", err);
+        let model = modelName;
+        let finishReason: string | undefined;
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for await (const chunk of stream as any) {
+          if (chunk.model) model = chunk.model;
+          const delta = chunk.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta.length > 0) {
+            text += delta;
+            try {
+              opts.onToken(delta);
+            } catch (err) {
+              console.warn("chatgpt onToken callback threw; ignoring", err);
+            }
           }
+          if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
+          if (chunk.usage) usage = chunk.usage;
         }
-        if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
-        if (chunk.usage) usage = chunk.usage;
-      }
 
-      return this.toResponse(text, model, usage, finishReason);
+        return this.toResponse(text, model, usage, finishReason);
+      } catch (err) {
+        // OpenAI reports usage only in the final chunk
+        // (`stream_options.include_usage`), so an abort mid-stream almost
+        // always falls back to the rough estimate.
+        if (opts.signal?.aborted) {
+          throw new LlmAbortedError({
+            providerName: this.providerName,
+            partialText: text,
+            cause: err,
+            ...resolveAbortUsage(
+              { inputTokens: usage?.prompt_tokens, outputTokens: usage?.completion_tokens },
+              opts,
+              text,
+            ),
+          });
+        }
+        throw err;
+      }
     }
 
     const response = await client.chat.completions.create(

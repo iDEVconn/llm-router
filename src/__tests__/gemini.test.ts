@@ -44,6 +44,7 @@ async function* asyncGenOf(items: any[]) {
 import {
   InvalidGenerateOptionsError,
   InvalidThinkingConfigError,
+  LlmAbortedError,
   LlmKeyValidationError,
   UnsupportedThinkingModeError,
 } from "../errors";
@@ -602,5 +603,216 @@ describe("GeminiStrategy", () => {
       ).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
       expect(mockVertexGenerateContent).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("GeminiStrategy streaming abort", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function* abortingGen(items: unknown[], controller: AbortController, abortErr?: unknown) {
+    for (const item of items) yield item;
+    controller.abort();
+    // The direct SDK surfaces the raw abort reason or its own
+    // GoogleGenerativeAIAbortError; default to the raw reason here.
+    throw abortErr ?? controller.signal.reason;
+  }
+  const directChunk = (text: string, usageMetadata?: Record<string, number>) => ({
+    text: () => text,
+    ...(usageMetadata ? { usageMetadata } : {}),
+  });
+
+  async function runDirectAborted(
+    chunks: unknown[],
+    extra: Partial<Parameters<GeminiStrategy["generate"]>[0]> = {},
+  ) {
+    const controller = new AbortController();
+    mockGenerateContentStream.mockResolvedValueOnce({
+      stream: abortingGen(chunks, controller),
+      response: new Promise(() => {}),
+    });
+    const deltas: string[] = [];
+    const err = await new GeminiStrategy({ apiKey: "k" })
+      .generate({
+        prompt: "12345678",
+        systemPrompt: "abcd",
+        onToken: (d) => deltas.push(d),
+        signal: controller.signal,
+        ...extra,
+      })
+      .catch((e: unknown) => e);
+    return { err: err as LlmAbortedError, deltas, reason: controller.signal.reason };
+  }
+
+  it("direct API: rejects with LlmAbortedError carrying delivered deltas; raw abort reason as cause", async () => {
+    const { err, deltas, reason } = await runDirectAborted([directChunk("Hel"), directChunk("lo")]);
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("AbortError");
+    expect(err.cause).toBe(reason);
+    expect(err.partialText).toBe("Hello");
+    expect(err.partialText).toBe(deltas.join(""));
+    expect(err.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+    expect(err.usageEstimated).toBe(true);
+    expect(err.message).toBe("gemini request aborted (5 chars received)");
+  });
+
+  it("direct API: uses the usageMetadata streamed on the last chunk (usageEstimated=false)", async () => {
+    const { err } = await runDirectAborted([
+      directChunk("Hel", { promptTokenCount: 20, candidatesTokenCount: 1 }),
+      directChunk("lo", { promptTokenCount: 20, candidatesTokenCount: 2 }),
+    ]);
+    expect(err.usage).toEqual({ inputTokens: 20, outputTokens: 2 });
+    expect(err.usageEstimated).toBe(false);
+  });
+
+  it("direct API: estimates the side usageMetadata did not report", async () => {
+    const { err } = await runDirectAborted([directChunk("abcdefgh", { promptTokenCount: 20 })]);
+    expect(err.usage).toEqual({ inputTokens: 20, outputTokens: 2 });
+    expect(err.usageEstimated).toBe(true);
+  });
+
+  it("direct API: an abort while opening the stream gives partialText '' and usage estimated from the prompt", async () => {
+    const controller = new AbortController();
+    const abortErr = new Error("Request aborted when fetching ...");
+    mockGenerateContentStream.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.reject(abortErr);
+    });
+    const err = (await new GeminiStrategy({ apiKey: "k" })
+      .generate({ prompt: "12345678", onToken: () => {}, signal: controller.signal })
+      .catch((e: unknown) => e)) as LlmAbortedError;
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect(err.cause).toBe(abortErr);
+    expect(err.partialText).toBe("");
+    expect(err.usage).toEqual({ inputTokens: 2, outputTokens: 0 });
+    expect(err.usageEstimated).toBe(true);
+  });
+
+  it("direct API: keeps a delta whose onToken callback threw in partialText", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { err } = await runDirectAborted([directChunk("A"), directChunk("B")], {
+      onToken: (d) => {
+        if (d === "B") throw new Error("consumer bug");
+      },
+    });
+    expect(err.partialText).toBe("AB");
+    warn.mockRestore();
+  });
+
+  it("direct API: does not wrap a non-abort mid-stream error", async () => {
+    const boom = new Error("[GoogleGenerativeAI Error]: 503");
+    mockGenerateContentStream.mockResolvedValueOnce({
+      stream: (async function* () {
+        yield directChunk("Hel");
+        throw boom;
+      })(),
+      response: new Promise(() => {}),
+    });
+    await expect(
+      new GeminiStrategy({ apiKey: "k" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toBe(boom);
+  });
+
+  it("direct API: leaves a non-streaming abort unchanged", async () => {
+    const controller = new AbortController();
+    const abortErr = new Error("Request aborted");
+    mockGenerateContent.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.reject(abortErr);
+    });
+    await expect(
+      new GeminiStrategy({ apiKey: "k" }).generate({ prompt: "p", signal: controller.signal }),
+    ).rejects.toBe(abortErr);
+  });
+
+  it("leaves the pre-start abort check unchanged for a streaming call (plain reason, no SDK call)", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      new GeminiStrategy({ apiKey: "k" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(controller.signal.reason);
+    expect(mockGenerateContentStream).not.toHaveBeenCalled();
+  });
+
+  it("vertex: carries text, thought parts as partialThinking, and streamed usageMetadata", async () => {
+    const controller = new AbortController();
+    const abortErr = new Error("aborted");
+    mockVertexGenerateContentStream.mockResolvedValueOnce(
+      abortingGen(
+        [
+          { candidates: [{ content: { parts: [{ text: "plan", thought: true }] } }] },
+          {
+            candidates: [{ content: { parts: [{ text: "Hel" }] } }],
+            usageMetadata: { promptTokenCount: 11, candidatesTokenCount: 4 },
+          },
+        ],
+        controller,
+        abortErr,
+      ),
+    );
+    const deltas: string[] = [];
+    const err = (await new GeminiStrategy({ connection: "vertex" })
+      .generate({
+        prompt: "x",
+        thinking: { type: "adaptive" },
+        onToken: (d) => deltas.push(d),
+        signal: controller.signal,
+      })
+      .catch((e: unknown) => e)) as LlmAbortedError;
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect(err.cause).toBe(abortErr);
+    expect(err.partialText).toBe("Hel");
+    expect(deltas).toEqual(["Hel"]);
+    expect(err.partialThinking).toBe("plan");
+    expect(err.usage).toEqual({ inputTokens: 11, outputTokens: 4 });
+    expect(err.usageEstimated).toBe(false);
+  });
+
+  it("vertex: estimates usage (text + thinking toward output) when no usageMetadata arrived", async () => {
+    const controller = new AbortController();
+    mockVertexGenerateContentStream.mockResolvedValueOnce(
+      abortingGen(
+        [
+          { candidates: [{ content: { parts: [{ text: "plan", thought: true }] } }] },
+          { candidates: [{ content: { parts: [{ text: "Hi" }] } }] },
+        ],
+        controller,
+      ),
+    );
+    const err = (await new GeminiStrategy({ connection: "vertex" })
+      .generate({ prompt: "12345678", onToken: () => {}, signal: controller.signal })
+      .catch((e: unknown) => e)) as LlmAbortedError;
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect(err.partialText).toBe("Hi");
+    expect(err.partialThinking).toBe("plan");
+    expect(err.usage).toEqual({ inputTokens: 2, outputTokens: 2 });
+    expect(err.usageEstimated).toBe(true);
+  });
+
+  it("vertex: does not wrap a non-abort mid-stream error", async () => {
+    const boom = new Error("vertex 500");
+    mockVertexGenerateContentStream.mockResolvedValueOnce(
+      (async function* () {
+        yield { candidates: [{ content: { parts: [{ text: "Hel" }] } }] };
+        throw boom;
+      })(),
+    );
+    await expect(
+      new GeminiStrategy({ connection: "vertex" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toBe(boom);
   });
 });

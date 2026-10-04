@@ -5,6 +5,7 @@ export {
   InvalidGenerateOptionsError,
   InvalidPlatformProviderError,
   InvalidThinkingConfigError,
+  LlmAbortedError,
   LlmKeyValidationError,
   NoAvailableProviderError,
   NoPlatformProviderError,
@@ -15,6 +16,7 @@ export {
   UnsupportedMultiTurnError,
   UnsupportedThinkingModeError,
 } from "./errors";
+export type { LlmAbortedErrorInit } from "./errors";
 export type {
   LlmAttachment,
   LlmGenerateOptions,

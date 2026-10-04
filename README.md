@@ -9,7 +9,7 @@ Library-agnostic LLM router. Provider-neutral `LlmStrategy` interface + `LlmRegi
 - BYOK first-class: every strategy accepts a per-call `apiKey` that overrides the platform key for that one request.
 - Platform-fallback fully optional: pass `platform: null` to `LlmRegistry` to require BYOK from every caller — useful for SaaS that doesn't subsidize AI usage.
 - Streaming (`onToken`) and reasoning/thinking (`thinking`) request options, and call cancellation (`signal`) — provider-agnostic on `LlmGenerateOptions`, implemented per-provider where the underlying SDK actually supports it (see [Streaming and reasoning/thinking](#streaming-and-reasoningthinking)).
-- Typed errors: `UnknownProviderError`, `NoPlatformProviderError`, `InvalidPlatformProviderError`, `LlmKeyValidationError`, `UnsupportedAttachmentError`, `TaskDecompositionError`, `NoAvailableProviderError`, `BudgetExceededError`, `UnsupportedThinkingModeError`, `InvalidThinkingConfigError`. No framework-specific exceptions.
+- Typed errors: `UnknownProviderError`, `NoPlatformProviderError`, `InvalidPlatformProviderError`, `LlmKeyValidationError`, `UnsupportedAttachmentError`, `TaskDecompositionError`, `NoAvailableProviderError`, `BudgetExceededError`, `UnsupportedThinkingModeError`, `InvalidThinkingConfigError`, `LlmAbortedError`. No framework-specific exceptions.
 - Cost control: `withBudget` decorator enforces per-call and total spend caps against a caller-supplied pricing table.
 - Instrumentation: `withInstrumentation` decorator emits a call event (usage, latency, truncation, errors) to any logger you choose.
 - Prompt injection defense: `sanitizeUntrustedContent` + `detectPromptInjection` (cheap heuristic gate) + `detectPromptInjectionWithModel` (opt-in LLM-based second opinion).
@@ -158,6 +158,53 @@ const stream = await strategy.generate({
   signal: abortController.signal,
 });
 console.log(stream.thinking); // reasoning trace, if the provider returned one
+```
+
+### Aborting a stream: `LlmAbortedError`
+
+When a **streaming** call (`onToken` set) is aborted via `signal`, every
+built-in strategy rejects with `LlmAbortedError` instead of the provider's
+bare abort error, so you can keep what was already shown to the user and
+account for the tokens spent:
+
+- `partialText` — exactly the concatenation of the deltas delivered to
+  `onToken` (including one whose callback threw).
+- `partialThinking?` — reasoning received so far, for strategies that
+  stream it (Gemini Vertex thought parts, DeepSeek `reasoning_content`).
+- `usage` / `usageEstimated` — provider-reported counts when the provider
+  had already sent both input and output usage mid-stream
+  (`usageEstimated: false`); otherwise the missing side is a deliberately
+  rough `Math.ceil(chars / 4)` estimate (`usageEstimated: true`). In
+  practice: Claude reports input tokens on `message_start` but output
+  tokens only near the end; Gemini attaches `usageMetadata` to stream
+  chunks when the server sends it; ChatGPT/Grok/DeepSeek report usage only
+  in the final chunk, so a mid-stream abort is always estimated.
+- `cause` — the original provider/abort error; `providerName`.
+
+Its `name` is `"AbortError"`, so existing `err.name === "AbortError"`
+checks keep working and `withRetry` / `withCircuitBreaker` treat it as an
+intentional abort (never retried, never counted as a provider failure).
+Use `instanceof LlmAbortedError` for the typed check. Non-streaming calls,
+calls aborted before they start, and non-abort errors are unchanged.
+
+```ts
+import { LlmAbortedError } from "@idevconn/llm-router";
+
+try {
+  const res = await strategy.generate({ prompt, onToken: send, signal });
+  await saveAnswer({ text: res.text, usage: res.usage });
+} catch (err) {
+  if (err instanceof LlmAbortedError) {
+    await saveAnswer({
+      text: err.partialText,
+      usage: err.usage,
+      usageEstimated: err.usageEstimated,
+      aborted: true,
+    });
+    return;
+  }
+  throw err;
+}
 ```
 
 ## Adding a custom provider
