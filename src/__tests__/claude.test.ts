@@ -16,6 +16,7 @@ vi.mock("@anthropic-ai/sdk", () => {
 import {
   InvalidGenerateOptionsError,
   InvalidThinkingConfigError,
+  LlmAbortedError,
   LlmKeyValidationError,
   UnsupportedThinkingModeError,
 } from "../errors";
@@ -440,5 +441,151 @@ describe("ClaudeStrategy", () => {
       await expect(strategy.generate({})).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
       expect(mockMessagesCreate).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("ClaudeStrategy streaming abort", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function abortingStream(events: any[], controller: AbortController, abortErr: unknown) {
+    return {
+      [Symbol.asyncIterator]: async function* () {
+        for (const event of events) yield event;
+        controller.abort();
+        throw abortErr;
+      },
+      finalMessage: () => new Promise(() => {}),
+    };
+  }
+  const textDelta = (text: string) => ({
+    type: "content_block_delta",
+    delta: { type: "text_delta", text },
+  });
+  const messageStart = (inputTokens: number) => ({
+    type: "message_start",
+    message: { usage: { input_tokens: inputTokens, output_tokens: 1 } },
+  });
+  const messageDelta = (outputTokens: number) => ({
+    type: "message_delta",
+    delta: { stop_reason: null },
+    usage: { output_tokens: outputTokens },
+  });
+
+  async function runAborted(events: unknown[], extra: Partial<Parameters<ClaudeStrategy["generate"]>[0]> = {}) {
+    const controller = new AbortController();
+    // Mirrors the SDK: APIUserAbortError is a plain Error subclass (name "Error").
+    const abortErr = new Error("Request was aborted.");
+    mockMessagesStream.mockReturnValueOnce(abortingStream(events, controller, abortErr));
+    const deltas: string[] = [];
+    const err = await new ClaudeStrategy({ apiKey: "k" })
+      .generate({
+        prompt: "12345678",
+        onToken: (d) => deltas.push(d),
+        signal: controller.signal,
+        ...extra,
+      })
+      .catch((e: unknown) => e);
+    return { err: err as LlmAbortedError, deltas, abortErr };
+  }
+
+  it("rejects with LlmAbortedError carrying the delivered deltas and the original error", async () => {
+    const { err, deltas, abortErr } = await runAborted([textDelta("Hel"), textDelta("lo")]);
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("AbortError");
+    expect(err.cause).toBe(abortErr);
+    expect(err.partialText).toBe("Hello");
+    expect(err.partialText).toBe(deltas.join(""));
+    expect(err.partialThinking).toBeUndefined();
+    expect(err.message).toBe("claude request aborted (5 chars received)");
+  });
+
+  it("uses provider-reported usage with usageEstimated=false when message_start and message_delta both arrived", async () => {
+    const { err } = await runAborted([
+      messageStart(42),
+      textDelta("Hel"),
+      textDelta("lo"),
+      messageDelta(7),
+    ]);
+    expect(err.usage).toEqual({ inputTokens: 42, outputTokens: 7 });
+    expect(err.usageEstimated).toBe(false);
+  });
+
+  it("estimates output (chars/4) with usageEstimated=true when only input was reported", async () => {
+    const { err } = await runAborted([messageStart(42), textDelta("abcd"), textDelta("efgh")]);
+    expect(err.usage).toEqual({ inputTokens: 42, outputTokens: 2 });
+    expect(err.usageEstimated).toBe(true);
+  });
+
+  it("estimates both sides when nothing was reported (prompt + systemPrompt chars / 4)", async () => {
+    const { err } = await runAborted([textDelta("abcde")], { systemPrompt: "abcd" });
+    expect(err.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+    expect(err.usageEstimated).toBe(true);
+  });
+
+  it("aborting before any delta gives partialText '' and usage estimated from the prompt", async () => {
+    const { err } = await runAborted([]);
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect(err.partialText).toBe("");
+    expect(err.usage).toEqual({ inputTokens: 2, outputTokens: 0 });
+    expect(err.usageEstimated).toBe(true);
+  });
+
+  it("keeps a delta whose onToken callback threw in partialText", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { err } = await runAborted([textDelta("A"), textDelta("B")], {
+      onToken: (d) => {
+        if (d === "B") throw new Error("consumer bug");
+      },
+    });
+    expect(err.partialText).toBe("AB");
+    warn.mockRestore();
+  });
+
+  it("does not wrap a non-abort mid-stream error", async () => {
+    const boom = new Error("overloaded");
+    mockMessagesStream.mockReturnValueOnce({
+      [Symbol.asyncIterator]: async function* () {
+        yield textDelta("Hel");
+        throw boom;
+      },
+      finalMessage: () => new Promise(() => {}),
+    });
+    const controller = new AbortController();
+    await expect(
+      new ClaudeStrategy({ apiKey: "k" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(boom);
+  });
+
+  it("a pre-aborted streaming call throws the plain signal.reason without calling the SDK", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      new ClaudeStrategy({ apiKey: "k" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(controller.signal.reason);
+    expect(mockMessagesStream).not.toHaveBeenCalled();
+  });
+
+  it("leaves a non-streaming abort unchanged", async () => {
+    const controller = new AbortController();
+    const abortErr = new Error("Request was aborted.");
+    mockMessagesCreate.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.reject(abortErr);
+    });
+    await expect(
+      new ClaudeStrategy({ apiKey: "k" }).generate({ prompt: "p", signal: controller.signal }),
+    ).rejects.toBe(abortErr);
   });
 });

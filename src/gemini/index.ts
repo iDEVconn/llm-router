@@ -1,9 +1,11 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
   InvalidThinkingConfigError,
+  LlmAbortedError,
   LlmKeyValidationError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { resolveAbortUsage } from "../usage-estimate";
 import { assertExactlyOnePromptSource } from "../validate-generate-options";
 import type {
   LlmAttachment,
@@ -87,6 +89,35 @@ function forwardDelta(onToken: ((delta: string) => void) | undefined, delta: str
   } catch (err) {
     console.warn("[gemini] onToken callback threw; ignoring", err);
   }
+}
+
+/**
+ * Wraps an error that ended a streaming call: when the caller's `signal`
+ * aborted it, returns an `LlmAbortedError` carrying what was received
+ * (Gemini attaches `usageMetadata` to stream chunks, so whatever the last
+ * chunk reported is used before falling back to the rough estimate);
+ * otherwise returns the original error unchanged.
+ */
+function wrapStreamAbort(
+  err: unknown,
+  opts: LlmGenerateOptions,
+  partialText: string,
+  partialThinking: string | undefined,
+  usage: GeminiUsageMetadata | undefined,
+): unknown {
+  if (!opts.signal?.aborted) return err;
+  return new LlmAbortedError({
+    providerName: "gemini",
+    partialText,
+    partialThinking,
+    cause: err,
+    ...resolveAbortUsage(
+      { inputTokens: usage?.promptTokenCount, outputTokens: usage?.candidatesTokenCount },
+      opts,
+      partialText,
+      partialThinking,
+    ),
+  });
 }
 
 /** Direct-API-shaped response (blocking `result.response`, or the awaited streaming final response). */
@@ -267,12 +298,26 @@ export class GeminiStrategy implements LlmStrategy {
       : buildParts(opts);
 
     if (opts.onToken) {
-      const result = await model.generateContentStream(requestPayload, requestOptions);
-      for await (const chunk of result.stream) {
-        forwardDelta(opts.onToken, chunk.text());
+      let partialText = "";
+      let usage: GeminiUsageMetadata | undefined;
+      try {
+        const result = await model.generateContentStream(requestPayload, requestOptions);
+        // The SDK tees the stream: `result.response` rejects too whenever
+        // iteration fails (abort or any other error), and nothing awaits it
+        // once the loop throws — an unhandled rejection that kills the
+        // process. Mark it handled; the success path still awaits it below.
+        result.response.catch(() => {});
+        for await (const chunk of result.stream) {
+          if (chunk.usageMetadata) usage = chunk.usageMetadata;
+          const delta = chunk.text();
+          partialText += delta;
+          forwardDelta(opts.onToken, delta);
+        }
+        const finalResponse = await result.response;
+        return buildDirectResponse(finalResponse, modelName);
+      } catch (err) {
+        throw wrapStreamAbort(err, opts, partialText, undefined, usage);
       }
-      const finalResponse = await result.response;
-      return buildDirectResponse(finalResponse, modelName);
     }
 
     const result = await model.generateContent(requestPayload, requestOptions);
@@ -329,16 +374,20 @@ export class GeminiStrategy implements LlmStrategy {
     const hasConfig = Object.keys(config).length > 0;
 
     if (opts.onToken) {
-      const stream = await client.models.generateContentStream({
-        model: modelName,
-        contents,
-        ...(hasConfig ? { config } : {}),
-      });
       const acc: VertexAccumulator = { text: "", thinking: "" };
-      for await (const chunk of stream) {
-        accumulateVertexChunk(acc, chunk, opts.onToken);
+      try {
+        const stream = await client.models.generateContentStream({
+          model: modelName,
+          contents,
+          ...(hasConfig ? { config } : {}),
+        });
+        for await (const chunk of stream) {
+          accumulateVertexChunk(acc, chunk, opts.onToken);
+        }
+        return finishVertexResult(acc, modelName);
+      } catch (err) {
+        throw wrapStreamAbort(err, opts, acc.text, acc.thinking || undefined, acc.usage);
       }
-      return finishVertexResult(acc, modelName);
     }
 
     const result = await client.models.generateContent({

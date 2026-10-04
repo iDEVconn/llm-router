@@ -1,9 +1,11 @@
 import OpenAI from "openai";
 import {
+  LlmAbortedError,
   LlmKeyValidationError,
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { resolveAbortUsage } from "../usage-estimate";
 import { assertExactlyOnePromptSource } from "../validate-generate-options";
 import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
@@ -146,7 +148,7 @@ export class GrokStrategy implements LlmStrategy {
     };
 
     if (opts.onToken) {
-      return this.generateStreaming(client, body, opts.onToken, opts.signal);
+      return this.generateStreaming(client, body, opts.onToken, opts.signal, opts);
     }
 
     const response = await client.chat.completions.create(body, { signal: opts.signal });
@@ -158,43 +160,70 @@ export class GrokStrategy implements LlmStrategy {
     body: Record<string, unknown>,
     onToken: (delta: string) => void,
     signal: AbortSignal | undefined,
+    promptSource: Pick<LlmGenerateOptions, "prompt" | "messages" | "systemPrompt">,
   ): Promise<LlmResponse> {
-    const stream = await client.chat.completions.create(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { ...body, stream: true, stream_options: { include_usage: true } } as any,
-      { signal },
-    );
-
     let text = "";
-    let model: string | undefined;
-    let finishReason: string | null | undefined;
     let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+    try {
+      const stream = await client.chat.completions.create(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { ...body, stream: true, stream_options: { include_usage: true } } as any,
+        { signal },
+      );
 
-    for await (const chunk of stream as unknown as AsyncIterable<{
-      choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>;
-      model?: string;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
-    }>) {
-      if (chunk.model) model = chunk.model;
-      if (chunk.usage) usage = chunk.usage;
-      const choice = chunk.choices?.[0];
-      if (choice?.finish_reason) finishReason = choice.finish_reason;
-      const delta = choice?.delta?.content;
-      if (delta) {
-        text += delta;
-        try {
-          onToken(delta);
-        } catch (err) {
-          console.warn("grok onToken callback threw; ignoring", err);
+      let model: string | undefined;
+      let finishReason: string | null | undefined;
+
+      for await (const chunk of stream as unknown as AsyncIterable<{
+        choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>;
+        model?: string;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      }>) {
+        if (chunk.model) model = chunk.model;
+        if (chunk.usage) usage = chunk.usage;
+        const choice = chunk.choices?.[0];
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        const delta = choice?.delta?.content;
+        if (delta) {
+          text += delta;
+          try {
+            onToken(delta);
+          } catch (err) {
+            console.warn("grok onToken callback threw; ignoring", err);
+          }
         }
       }
-    }
 
-    return this.shapeResponse({
-      choices: [{ message: { content: text }, finish_reason: finishReason }],
-      model: model ?? "",
-      usage,
-    });
+      // The openai SDK's Stream swallows an abort (core/streaming.js: on
+      // `isAbortError(e) || signal.aborted` it just returns), so `for await`
+      // ends normally with a truncated answer. No finish_reason means the
+      // answer is incomplete: surface the abort so the catch below wraps it.
+      if (signal?.aborted && !finishReason) {
+        throw signal.reason ?? new DOMException("aborted", "AbortError");
+      }
+
+      return this.shapeResponse({
+        choices: [{ message: { content: text }, finish_reason: finishReason }],
+        model: model ?? "",
+        usage,
+      });
+    } catch (err) {
+      // xAI (OpenAI-compatible) reports usage only in the final chunk, so an
+      // abort mid-stream almost always falls back to the rough estimate.
+      if (signal?.aborted) {
+        throw new LlmAbortedError({
+          providerName: this.providerName,
+          partialText: text,
+          cause: err,
+          ...resolveAbortUsage(
+            { inputTokens: usage?.prompt_tokens, outputTokens: usage?.completion_tokens },
+            promptSource,
+            text,
+          ),
+        });
+      }
+      throw err;
+    }
   }
 
   private shapeResponse(raw: {

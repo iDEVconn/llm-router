@@ -11,7 +11,8 @@ export default defineConfig({
     "embeddings/pgvector": "src/embeddings/pgvector/index.ts",
   },
   format: ["esm", "cjs"],
-  dts: true,
+  // tsup injects a deprecated `baseUrl` into its DTS pass; TypeScript 6 rejects it without this.
+  dts: { compilerOptions: { ignoreDeprecations: "6.0" } },
   sourcemap: true,
   clean: true,
   target: "es2022",

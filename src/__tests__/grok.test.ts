@@ -17,6 +17,7 @@ vi.mock("openai", () => {
 
 import {
   InvalidGenerateOptionsError,
+  LlmAbortedError,
   LlmKeyValidationError,
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
@@ -363,5 +364,188 @@ describe("GrokStrategy", () => {
       await expect(strategy.generate({})).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
       expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("GrokStrategy streaming abort", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const chunk = (content: string) => ({ choices: [{ delta: { content } }] });
+
+  /**
+   * Behaves like the real openai SDK `Stream`: on abort it swallows the
+   * error (core/streaming.js returns on `isAbortError(e) || signal.aborted`)
+   * and the iteration just ends — no throw. `mode: "throw"` instead throws
+   * `abortErr` after aborting (defensive path / other SDK versions).
+   */
+  async function* abortingChunks(
+    chunks: unknown[],
+    controller: AbortController,
+    abortErr: unknown,
+    mode: "silent" | "throw" = "silent",
+  ) {
+    for (const c of chunks) yield c;
+    controller.abort();
+    if (mode === "throw") throw abortErr;
+  }
+
+  async function runAborted(
+    chunks: unknown[],
+    extra: Partial<Parameters<GrokStrategy["generate"]>[0]> = {},
+    mode: "silent" | "throw" = "silent",
+  ) {
+    const controller = new AbortController();
+    // Only used in "throw" mode; the openai SDK's APIUserAbortError is a plain Error (name "Error").
+    const abortErr = new Error("Request was aborted.");
+    mockChatCompletionsCreate.mockResolvedValueOnce(
+      abortingChunks(chunks, controller, abortErr, mode),
+    );
+    const deltas: string[] = [];
+    const err = await new GrokStrategy({ apiKey: "k" })
+      .generate({
+        prompt: "12345678",
+        systemPrompt: "abcd",
+        onToken: (d) => deltas.push(d),
+        signal: controller.signal,
+        ...extra,
+      })
+      .catch((e: unknown) => e);
+    return { err: err as LlmAbortedError, deltas, abortErr, reason: controller.signal.reason };
+  }
+
+  it("a silently-ended aborted stream (real SDK behaviour) rejects with LlmAbortedError: delivered deltas, estimated usage, signal.reason as cause", async () => {
+    const { err, deltas, reason } = await runAborted([chunk("Hel"), chunk("lo")]);
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("AbortError");
+    expect(err.cause).toBe(reason);
+    expect(err.partialText).toBe("Hello");
+    expect(err.partialText).toBe(deltas.join(""));
+    // Usage only arrives in the final chunk → always estimated mid-stream:
+    // input (8 + 4 chars) / 4 = 3, output 5 chars / 4 → 2.
+    expect(err.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+    expect(err.usageEstimated).toBe(true);
+    expect(err.message).toBe("grok request aborted (5 chars received)");
+  });
+
+  it("uses provider-reported usage when the final usage chunk already arrived", async () => {
+    const { err } = await runAborted([
+      chunk("Hi"),
+      { choices: [], usage: { prompt_tokens: 30, completion_tokens: 9 } },
+    ]);
+    expect(err.usage).toEqual({ inputTokens: 30, outputTokens: 9 });
+    expect(err.usageEstimated).toBe(false);
+  });
+
+  it("an abort that the SDK surfaces by throwing mid-stream is wrapped with that error as cause", async () => {
+    const { err, abortErr } = await runAborted([chunk("Hel")], {}, "throw");
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect(err.cause).toBe(abortErr);
+    expect(err.partialText).toBe("Hel");
+  });
+
+  it("an abort after finish_reason arrived resolves normally (the answer was complete)", async () => {
+    const controller = new AbortController();
+    mockChatCompletionsCreate.mockResolvedValueOnce(
+      abortingChunks(
+        [chunk("Hel"), { choices: [{ delta: { content: "lo" }, finish_reason: "stop" }] }],
+        controller,
+        undefined,
+      ),
+    );
+    const result = await new GrokStrategy({ apiKey: "k" }).generate({
+      prompt: "p",
+      onToken: () => {},
+      signal: controller.signal,
+    });
+    expect(controller.signal.aborted).toBe(true);
+    expect(result.text).toBe("Hello");
+    expect(result.truncated).toBe(false);
+  });
+
+  it("a stream that ends without finish_reason and without an abort still resolves (unchanged)", async () => {
+    mockChatCompletionsCreate.mockResolvedValueOnce(
+      (async function* () {
+        yield chunk("Hel");
+      })(),
+    );
+    const result = await new GrokStrategy({ apiKey: "k" }).generate({
+      prompt: "p",
+      onToken: () => {},
+      signal: new AbortController().signal,
+    });
+    expect(result.text).toBe("Hel");
+  });
+
+  it("an abort while opening the stream gives partialText '' and usage estimated from the prompt", async () => {
+    const controller = new AbortController();
+    const abortErr = new Error("Request was aborted.");
+    mockChatCompletionsCreate.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.reject(abortErr);
+    });
+    const err = await new GrokStrategy({ apiKey: "k" })
+      .generate({ prompt: "12345678", onToken: () => {}, signal: controller.signal })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LlmAbortedError);
+    expect((err as LlmAbortedError).cause).toBe(abortErr);
+    expect((err as LlmAbortedError).partialText).toBe("");
+    expect((err as LlmAbortedError).usage).toEqual({ inputTokens: 2, outputTokens: 0 });
+    expect((err as LlmAbortedError).usageEstimated).toBe(true);
+  });
+
+  it("keeps a delta whose onToken callback threw in partialText", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { err } = await runAborted([chunk("A"), chunk("B")], {
+      onToken: (d) => {
+        if (d === "B") throw new Error("consumer bug");
+      },
+    });
+    expect(err.partialText).toBe("AB");
+    warn.mockRestore();
+  });
+
+  it("does not wrap a non-abort mid-stream error", async () => {
+    const boom = new Error("socket hang up");
+    mockChatCompletionsCreate.mockResolvedValueOnce(
+      (async function* () {
+        yield chunk("Hel");
+        throw boom;
+      })(),
+    );
+    await expect(
+      new GrokStrategy({ apiKey: "k" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toBe(boom);
+  });
+
+  it("leaves a non-streaming abort unchanged", async () => {
+    const controller = new AbortController();
+    const abortErr = new Error("Request was aborted.");
+    mockChatCompletionsCreate.mockImplementationOnce(() => {
+      controller.abort();
+      return Promise.reject(abortErr);
+    });
+    await expect(
+      new GrokStrategy({ apiKey: "k" }).generate({ prompt: "p", signal: controller.signal }),
+    ).rejects.toBe(abortErr);
+  });
+
+  it("leaves the pre-start abort check unchanged for a streaming call (plain reason, no SDK call)", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      new GrokStrategy({ apiKey: "k" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(controller.signal.reason);
+    expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
   });
 });

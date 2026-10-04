@@ -1,9 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   InvalidThinkingConfigError,
+  LlmAbortedError,
   LlmKeyValidationError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { resolveAbortUsage, type ReportedUsage } from "../usage-estimate";
 import { assertExactlyOnePromptSource } from "../validate-generate-options";
 import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
@@ -148,14 +150,41 @@ export class ClaudeStrategy implements LlmStrategy {
     const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
 
     if (opts.onToken) {
-      const stream = client.messages.stream(params, requestOptions);
-      for await (const event of stream) {
-        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-          this.safeOnToken(opts.onToken, event.delta.text);
-        }
+      // Same pre-start check as the other strategies: nothing was received,
+      // so throw the plain abort reason rather than an LlmAbortedError.
+      if (opts.signal?.aborted) {
+        throw opts.signal.reason ?? new Error("claude request aborted before it started");
       }
-      const finalMessage = await stream.finalMessage();
-      return this.buildResponse(finalMessage);
+      let partialText = "";
+      // Anthropic reports input tokens on `message_start` and cumulative
+      // output tokens on `message_delta`; keep whatever arrived so an
+      // aborted stream can still account for them.
+      const reported: ReportedUsage = {};
+      try {
+        const stream = client.messages.stream(params, requestOptions);
+        for await (const event of stream) {
+          if (event.type === "message_start") {
+            reported.inputTokens = event.message.usage?.input_tokens;
+          } else if (event.type === "message_delta") {
+            reported.outputTokens = event.usage?.output_tokens;
+          } else if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+            partialText += event.delta.text;
+            this.safeOnToken(opts.onToken, event.delta.text);
+          }
+        }
+        const finalMessage = await stream.finalMessage();
+        return this.buildResponse(finalMessage);
+      } catch (err) {
+        if (opts.signal?.aborted) {
+          throw new LlmAbortedError({
+            providerName: this.providerName,
+            partialText,
+            cause: err,
+            ...resolveAbortUsage(reported, opts, partialText),
+          });
+        }
+        throw err;
+      }
     }
 
     const response = await client.messages.create(params, requestOptions);
