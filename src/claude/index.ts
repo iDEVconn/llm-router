@@ -150,6 +150,11 @@ export class ClaudeStrategy implements LlmStrategy {
     const requestOptions = opts.signal ? { signal: opts.signal } : undefined;
 
     if (opts.onToken) {
+      // Same pre-start check as the other strategies: nothing was received,
+      // so throw the plain abort reason rather than an LlmAbortedError.
+      if (opts.signal?.aborted) {
+        throw opts.signal.reason ?? new Error("claude request aborted before it started");
+      }
       let partialText = "";
       // Anthropic reports input tokens on `message_start` and cumulative
       // output tokens on `message_delta`; keep whatever arrived so an

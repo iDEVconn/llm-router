@@ -564,6 +564,19 @@ describe("ClaudeStrategy streaming abort", () => {
     ).rejects.toBe(boom);
   });
 
+  it("a pre-aborted streaming call throws the plain signal.reason without calling the SDK", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      new ClaudeStrategy({ apiKey: "k" }).generate({
+        prompt: "p",
+        onToken: () => {},
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(controller.signal.reason);
+    expect(mockMessagesStream).not.toHaveBeenCalled();
+  });
+
   it("leaves a non-streaming abort unchanged", async () => {
     const controller = new AbortController();
     const abortErr = new Error("Request was aborted.");

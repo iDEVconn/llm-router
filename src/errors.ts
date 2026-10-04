@@ -199,6 +199,9 @@ export class LlmAbortedError extends Error {
    * fail `instanceof LlmAbortedError` imported from `@idevconn/llm-router`
    * (same for an ESM/CJS dual-package mix). A global-registry symbol makes
    * every copy of the class recognise every other copy's instances.
+   * The brand is set in this constructor, so subclasses inherit both it and
+   * this `instanceof` behaviour (a subclass instance is also an
+   * `LlmAbortedError`, as with ordinary prototype-based `instanceof`).
    */
   static override [Symbol.hasInstance](value: unknown): boolean {
     return (

@@ -194,6 +194,14 @@ export class GrokStrategy implements LlmStrategy {
         }
       }
 
+      // The openai SDK's Stream swallows an abort (core/streaming.js: on
+      // `isAbortError(e) || signal.aborted` it just returns), so `for await`
+      // ends normally with a truncated answer. No finish_reason means the
+      // answer is incomplete: surface the abort so the catch below wraps it.
+      if (signal?.aborted && !finishReason) {
+        throw signal.reason ?? new DOMException("aborted", "AbortError");
+      }
+
       return this.shapeResponse({
         choices: [{ message: { content: text }, finish_reason: finishReason }],
         model: model ?? "",

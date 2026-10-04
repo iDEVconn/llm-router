@@ -111,6 +111,20 @@ describe("LlmAbortedError", () => {
     expect(null).not.toBeInstanceOf(LlmAbortedError);
   });
 
+  it("subclasses inherit the brand-based instanceof", () => {
+    class ToolAbortedError extends LlmAbortedError {}
+    const sub = new ToolAbortedError({
+      providerName: "claude",
+      partialText: "",
+      usage: { inputTokens: 0, outputTokens: 0 },
+      usageEstimated: true,
+      cause: null,
+    });
+    expect(sub).toBeInstanceOf(LlmAbortedError);
+    expect(sub).toBeInstanceOf(Error);
+    expect(sub.name).toBe("AbortError");
+  });
+
   it("is exported from the package entry point", () => {
     expect(pkg.LlmAbortedError).toBe(LlmAbortedError);
   });

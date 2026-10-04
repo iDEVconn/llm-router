@@ -302,6 +302,11 @@ export class GeminiStrategy implements LlmStrategy {
       let usage: GeminiUsageMetadata | undefined;
       try {
         const result = await model.generateContentStream(requestPayload, requestOptions);
+        // The SDK tees the stream: `result.response` rejects too whenever
+        // iteration fails (abort or any other error), and nothing awaits it
+        // once the loop throws — an unhandled rejection that kills the
+        // process. Mark it handled; the success path still awaits it below.
+        result.response.catch(() => {});
         for await (const chunk of result.stream) {
           if (chunk.usageMetadata) usage = chunk.usageMetadata;
           const delta = chunk.text();

@@ -151,6 +151,7 @@ export class DeepSeekStrategy implements LlmStrategy {
         let inputTokens = 0;
         let outputTokens = 0;
         let truncated = false;
+        let finished = false;
 
         for await (const chunk of stream as AsyncIterable<DeepSeekStreamChunk>) {
           const choice = chunk.choices?.[0];
@@ -164,6 +165,7 @@ export class DeepSeekStrategy implements LlmStrategy {
             }
           }
           if (delta?.reasoning_content) reasoning += delta.reasoning_content;
+          if (choice?.finish_reason) finished = true;
           if (choice?.finish_reason === "length") truncated = true;
           if (chunk.model) model = chunk.model;
           if (chunk.usage) {
@@ -172,6 +174,14 @@ export class DeepSeekStrategy implements LlmStrategy {
             reported.inputTokens = chunk.usage.prompt_tokens;
             reported.outputTokens = chunk.usage.completion_tokens;
           }
+        }
+
+        // The openai SDK's Stream swallows an abort (core/streaming.js: on
+        // `isAbortError(e) || signal.aborted` it just returns), so `for await`
+        // ends normally with a truncated answer. No finish_reason means the
+        // answer is incomplete: surface the abort so the catch below wraps it.
+        if (opts.signal?.aborted && !finished) {
+          throw opts.signal.reason ?? new DOMException("aborted", "AbortError");
         }
 
         return shapeResponse(text, model, inputTokens, outputTokens, truncated, reasoning || undefined);

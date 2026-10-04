@@ -179,13 +179,31 @@ account for the tokens spent:
   tokens only near the end; Gemini attaches `usageMetadata` to stream
   chunks when the server sends it; ChatGPT/Grok/DeepSeek report usage only
   in the final chunk, so a mid-stream abort is always estimated.
-- `cause` — the original provider/abort error; `providerName`.
+  Provider-reported numbers mean the same as on a normal response: Claude's
+  `message_start` `input_tokens` excludes cache read/creation tokens, and
+  Gemini's `candidatesTokenCount` excludes thought tokens. Only an
+  estimated output side counts received thinking text.
+- `cause` — the original provider/abort error (for ChatGPT/Grok/DeepSeek,
+  whose SDK ends an aborted stream silently, this is `signal.reason`);
+  `providerName`.
 
 Its `name` is `"AbortError"`, so existing `err.name === "AbortError"`
 checks keep working and `withRetry` / `withCircuitBreaker` treat it as an
 intentional abort (never retried, never counted as a provider failure).
 Use `instanceof LlmAbortedError` for the typed check. Non-streaming calls,
-calls aborted before they start, and non-abort errors are unchanged.
+calls aborted before the request starts (these throw the plain
+`signal.reason`, as before), and non-abort errors are unchanged. An abort
+that lands after the provider already signalled completion (e.g. a
+`finish_reason` arrived) resolves normally with the full response.
+
+**`partialText` and `partialThinking` are untrusted model output, exactly
+like `response.text`/`response.thinking`.** Never re-feed them into another
+prompt without running them through
+`sanitizeUntrustedContent`/`detectPromptInjection` first. Both are
+enumerable own properties of the error, so loggers that serialize error
+properties (pino's error serializer, Nest setups that log the full error object, …) will write model output
+into your logs — redact them (e.g. pino `redact: ["err.partialText",
+"err.partialThinking"]`) if that matters.
 
 ```ts
 import { LlmAbortedError } from "@idevconn/llm-router";

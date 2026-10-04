@@ -719,6 +719,47 @@ describe("GeminiStrategy streaming abort", () => {
     ).rejects.toBe(boom);
   });
 
+  it("direct API: the SDK's tee'd result.response rejecting with the stream is never left unhandled", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      for (const abort of [true, false]) {
+        const controller = new AbortController();
+        const failure = new Error(abort ? "Request aborted" : "Error reading from the stream");
+        // Like the real SDK: result.response is derived from the same
+        // (tee'd) stream, so it rejects when iteration fails.
+        let rejectResponse!: (err: unknown) => void;
+        const response = new Promise((_, reject) => {
+          rejectResponse = reject;
+        });
+        mockGenerateContentStream.mockResolvedValueOnce({
+          stream: (async function* () {
+            yield directChunk("Hel");
+            if (abort) controller.abort();
+            rejectResponse(failure);
+            throw failure;
+          })(),
+          response,
+        });
+        const err = await new GeminiStrategy({ apiKey: "k" })
+          .generate({ prompt: "p", onToken: () => {}, signal: controller.signal })
+          .catch((e: unknown) => e);
+        if (abort) {
+          expect(err).toBeInstanceOf(LlmAbortedError);
+          expect((err as LlmAbortedError).cause).toBe(failure);
+        } else {
+          expect(err).toBe(failure);
+        }
+      }
+      // Let Node's unhandled-rejection detection run.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("direct API: leaves a non-streaming abort unchanged", async () => {
     const controller = new AbortController();
     const abortErr = new Error("Request aborted");
