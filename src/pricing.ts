@@ -6,10 +6,13 @@ import { toTokenCount } from "./usage-cache";
  *
  * `cacheWritePer1M` / `cacheReadPer1M` are optional: when a usage carries
  * cache counters and the rate is missing, those tokens are priced at
- * `inputPer1M`. For Anthropic set them explicitly (5-minute cache write is
- * 1.25x input, cache read 0.1x input); for OpenAI-compatible providers,
- * DeepSeek and Gemini set `cacheReadPer1M` to the provider's cached-input
- * price.
+ * `inputPer1M`, which over-prices cache reads (a conservative estimate).
+ * For Anthropic set both explicitly, per model
+ * (https://platform.claude.com/docs/en/about-claude/pricing): 5-minute
+ * cache write is 1.25x input; cache read is 0.1x input by default, 0.05x on
+ * Opus 5.5 / Sonnet 5.5 and 0.025x on Fable / Mythos 5.1 and 5.2. For
+ * OpenAI-compatible providers, DeepSeek and Gemini set `cacheReadPer1M` to
+ * the provider's cached-input price.
  */
 export interface ModelPricing {
   inputPer1M: number;

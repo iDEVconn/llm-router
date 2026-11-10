@@ -170,6 +170,22 @@ function fakeStrategy(usage: LlmUsage, model = "claude-sonnet"): LlmStrategy {
   };
 }
 
+describe("documented Claude budget example (README / changeset)", () => {
+  const sonnet45: PricingTable = {
+    claude: {
+      exact: { inputPer1M: 3, outputPer1M: 15, cacheWritePer1M: 3.75, cacheReadPer1M: 0.3 },
+      old: { inputPer1M: 3, outputPer1M: 15 },
+    },
+  };
+  const usage: LlmUsage = { inputTokens: 1_000, outputTokens: 1_000, cacheReadInputTokens: 50_000 };
+
+  it("before: $0.018 (cache tokens unknown); old table now: $0.168; with cache rates: $0.033", () => {
+    expect(calculateCost({ inputTokens: 1_000, outputTokens: 1_000 }, "claude", "old", sonnet45)).toBeCloseTo(0.018, 9);
+    expect(calculateCost(usage, "claude", "old", sonnet45)).toBeCloseTo(0.168, 9);
+    expect(calculateCost(usage, "claude", "exact", sonnet45)).toBeCloseTo(0.033, 9);
+  });
+});
+
 describe("withBudget with cache tokens", () => {
   it("includes cache tokens in the per-call cost and passes the full usage to onCost", async () => {
     const usage: LlmUsage = {

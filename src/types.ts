@@ -124,7 +124,13 @@ export interface LlmGenerateOptions {
  *  - `inputTokensIncludeCache` not true (Claude):
  *    cost = inputTokens*pIn + cacheCreationInputTokens*pWrite
  *         + cacheReadInputTokens*pRead + outputTokens*pOut
- *    (Anthropic: pWrite = 1.25*pIn for the 5-minute TTL, pRead = 0.1*pIn).
+ *    Anthropic rates are per model
+ *    (https://platform.claude.com/docs/en/about-claude/pricing):
+ *    pWrite = 1.25*pIn (5-minute cache, the only TTL this package
+ *    requests; 1-hour writes would be 2*pIn); pRead = 0.1*pIn by default,
+ *    but 0.05*pIn on Opus 5.5 / Sonnet 5.5 and 0.025*pIn on
+ *    Fable / Mythos 5.1 and 5.2. Take pRead from the pricing page for
+ *    the exact model.
  *  - `inputTokensIncludeCache: true` (OpenAI-compatible, DeepSeek, Gemini):
  *    uncached = inputTokens - cacheReadInputTokens - (cacheCreationInputTokens ?? 0)
  *    cost = uncached*pIn + cacheReadInputTokens*pRead + outputTokens*pOut

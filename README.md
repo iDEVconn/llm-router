@@ -332,12 +332,22 @@ import { calculateCost, splitInputTokens } from "@idevconn/llm-router";
 const { uncachedInputTokens, cacheCreationInputTokens, cacheReadInputTokens, totalInputTokens } =
   splitInputTokens(res.usage); // disjoint counts for any provider
 
-// By hand for Claude (5-minute cache: write = 1.25 x input, read = 0.1 x input):
+// By hand for Claude (pRead is per model, see below):
 // cost = inputTokens*pIn + cacheCreationInputTokens*pIn*1.25
-//      + cacheReadInputTokens*pIn*0.1 + outputTokens*pOut
+//      + cacheReadInputTokens*pRead + outputTokens*pOut
 // For providers with inputTokensIncludeCache: true:
 // cost = (inputTokens - cacheReadInputTokens)*pIn + cacheReadInputTokens*pCachedIn + outputTokens*pOut
 ```
+
+Claude cache rates are per model; take them from the
+[Anthropic pricing page](https://platform.claude.com/docs/en/about-claude/pricing):
+
+- 5-minute cache write: 1.25 x input. This package only sends the default
+  5-minute `cache_control`, so every `cacheCreationInputTokens` is a 5-minute
+  write (1-hour writes, 2 x input, are never requested).
+- Cache read: 0.1 x input by default, but 0.05 x input on Claude Opus 5.5 and
+  Claude Sonnet 5.5, and 0.025 x input on Claude Fable / Mythos 5.1 and 5.2.
+  Do not assume 0.1 x for every model.
 
 ## Cost control
 
@@ -365,18 +375,31 @@ Each pricing entry may also carry `cacheWritePer1M` and `cacheReadPer1M`.
 `calculateCost` prices the cache counters at those rates (falling back to
 `inputPer1M` when a rate is missing) and never counts tokens twice for
 providers whose `inputTokens` already includes them. A usage without cache
-counters costs exactly what it did before. Since Claude responses now carry
-the cache counters, a Claude cost from `calculateCost`/`withBudget` now
-includes the cache tokens it used to leave out: add the cache rates for
-your Claude models to keep it exact.
+counters costs exactly what it did before.
 
 ```ts
 const pricing: PricingTable = {
   claude: {
+    // 5m write 1.25 x input, read 0.1 x input
     "claude-sonnet-4-5": { inputPer1M: 3, outputPer1M: 15, cacheWritePer1M: 3.75, cacheReadPer1M: 0.3 },
+    // 5m write 1.25 x input, read 0.05 x input
+    "claude-sonnet-5-5": { inputPer1M: 2, outputPer1M: 10, cacheWritePer1M: 2.5, cacheReadPer1M: 0.1 },
   },
 };
 ```
+
+**Claude budgets now see higher costs.** Claude responses now carry their
+cache counters, so `maxCostPerCall`, `maxCostTotal` and `onCost` see the
+cache tokens that were left out before. Add `cacheWritePer1M` /
+`cacheReadPer1M` to your Claude pricing entries to price them exactly.
+Without them, cache tokens are priced at the full `inputPer1M` rate: cache
+reads become a conservative over-estimate (10-40x their real price) and
+5-minute writes are priced at 0.8x their real price. Example with
+`claude-sonnet-4-5`, a 50k-token cached system prompt read, 1k input and 1k
+output: $0.018 before this change, $0.168 now with a table that has no cache
+rates, $0.033 with the cache rates (the true cost). A `maxCostPerCall: 0.05`
+that used to pass would now throw `BudgetExceededError`, after the call was
+already paid for, unless the cache rates are added.
 
 Cost is only known after a call returns (token counts come from the
 response), so `maxCostPerCall` is checked against the call that just

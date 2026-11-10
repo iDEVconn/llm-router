@@ -159,9 +159,10 @@ export class ClaudeStrategy implements LlmStrategy {
       }
       let partialText = "";
       // Anthropic reports input tokens and the cache counters on
-      // `message_start` and cumulative output tokens on `message_delta`
-      // (whose cache counters, when non-null, are cumulative too and win);
-      // keep whatever arrived so an aborted stream can still account for them.
+      // `message_start` and cumulative output tokens on `message_delta`.
+      // `message_delta.usage` input/cache counters are cumulative too: when
+      // non-null they win (the SDK's own accumulator does the same). Keep
+      // whatever arrived so an aborted stream can still account for them.
       const reported: ReportedUsage = {};
       try {
         const stream = client.messages.stream(params, requestOptions);
@@ -173,6 +174,8 @@ export class ClaudeStrategy implements LlmStrategy {
             reported.cacheReadInputTokens = usage?.cache_read_input_tokens;
           } else if (event.type === "message_delta") {
             reported.outputTokens = event.usage?.output_tokens;
+            const input = toTokenCount(event.usage?.input_tokens);
+            if (input !== undefined) reported.inputTokens = input;
             const creation = toTokenCount(event.usage?.cache_creation_input_tokens);
             const read = toTokenCount(event.usage?.cache_read_input_tokens);
             if (creation !== undefined) reported.cacheCreationInputTokens = creation;
@@ -251,6 +254,12 @@ export class ClaudeStrategy implements LlmStrategy {
       usage: {
         // Anthropic's `input_tokens` excludes cache writes/reads; those are
         // reported separately (total input = the three summed).
+        // `cache_creation_input_tokens` is reported as one number: this
+        // adapter only ever sends the default 5-minute ephemeral
+        // `cache_control` (no `ttl`), so every write is billed at the 5m
+        // rate and ignoring the `cache_creation.ephemeral_1h_input_tokens`
+        // breakdown (billed at 2x input) is correct today. Revisit this if a
+        // `ttl: "1h"` cache_control is ever requested.
         inputTokens: response.usage.input_tokens ?? 0,
         outputTokens: response.usage.output_tokens ?? 0,
         ...cacheUsageFields({

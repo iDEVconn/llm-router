@@ -175,6 +175,37 @@ describe("Claude cache usage", () => {
     expect(err.usage).toEqual({ inputTokens: 5, outputTokens: 4, cacheReadInputTokens: 20 });
   });
 
+  it("aborted stream: a non-null cumulative message_delta input_tokens revises the input side too", async () => {
+    const err = await runAborted([
+      {
+        type: "message_start",
+        message: {
+          usage: { input_tokens: 5, output_tokens: 1, cache_creation_input_tokens: 100, cache_read_input_tokens: 0 },
+        },
+      },
+      {
+        type: "message_delta",
+        delta: { stop_reason: null },
+        usage: { output_tokens: 4, input_tokens: 9, cache_creation_input_tokens: 120, cache_read_input_tokens: 30 },
+      },
+    ]);
+    expect(err.usage).toEqual({
+      inputTokens: 9,
+      outputTokens: 4,
+      cacheCreationInputTokens: 120,
+      cacheReadInputTokens: 30,
+    });
+    expect(err.usageEstimated).toBe(false);
+  });
+
+  it("aborted stream: a null message_delta input_tokens keeps the message_start value", async () => {
+    const err = await runAborted([
+      { type: "message_start", message: { usage: { input_tokens: 5, output_tokens: 1 } } },
+      { type: "message_delta", delta: { stop_reason: null }, usage: { output_tokens: 4, input_tokens: null } },
+    ]);
+    expect(err.usage).toEqual({ inputTokens: 5, outputTokens: 4 });
+  });
+
   it("aborted stream: no cache fields when message_start never arrived", async () => {
     const err = await runAborted([{ type: "content_block_delta", delta: { type: "text_delta", text: "abcd" } }]);
     expect(err.usage).toEqual({ inputTokens: 2, outputTokens: 1 });
@@ -427,13 +458,20 @@ describe("requireApiKey", () => {
     ["gemini", () => new GeminiStrategy({ apiKey: "platform" })],
     ["gemini vertex", () => new GeminiStrategy({ connection: "vertex" })],
   ])("%s: refuses to fall back to the platform key, before any network call", async (_name, make) => {
-    await expect(make().generate({ prompt: "p", apiKey: "", requireApiKey: true })).rejects.toBeInstanceOf(
-      InvalidGenerateOptionsError,
-    );
+    for (const apiKey of ["", undefined, "   "]) {
+      for (const onToken of [undefined, () => {}]) {
+        await expect(
+          make().generate({ prompt: "p", apiKey, requireApiKey: true, ...(onToken ? { onToken } : {}) }),
+        ).rejects.toBeInstanceOf(InvalidGenerateOptionsError);
+      }
+    }
     expect(mockMessagesCreate).not.toHaveBeenCalled();
+    expect(mockMessagesStream).not.toHaveBeenCalled();
     expect(mockChatCompletionsCreate).not.toHaveBeenCalled();
     expect(mockGenerateContent).not.toHaveBeenCalled();
+    expect(mockGenerateContentStream).not.toHaveBeenCalled();
     expect(mockVertexGenerateContent).not.toHaveBeenCalled();
+    expect(mockVertexGenerateContentStream).not.toHaveBeenCalled();
   });
 
   it("without requireApiKey an empty apiKey still falls back to the platform key (unchanged)", async () => {
