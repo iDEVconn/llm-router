@@ -6,8 +6,9 @@ import {
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { cacheUsageFields, openAiCacheFields, type OpenAiCompatibleUsage } from "../usage-cache";
 import { resolveAbortUsage } from "../usage-estimate";
-import { assertExactlyOnePromptSource } from "../validate-generate-options";
+import { assertApiKeyIfRequired, assertExactlyOnePromptSource } from "../validate-generate-options";
 import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -91,6 +92,7 @@ export class ChatGptStrategy implements LlmStrategy {
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
     assertExactlyOnePromptSource(opts);
+    assertApiKeyIfRequired(opts);
 
     for (const attachment of opts.attachments ?? []) {
       if (!SUPPORTED_IMAGE_TYPES.has(attachment.mimetype)) {
@@ -153,7 +155,7 @@ export class ChatGptStrategy implements LlmStrategy {
 
     if (opts.onToken) {
       let text = "";
-      let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+      let usage: OpenAiCompatibleUsage | undefined;
       try {
         const stream = await client.chat.completions.create(
           {
@@ -206,7 +208,11 @@ export class ChatGptStrategy implements LlmStrategy {
             partialText: text,
             cause: err,
             ...resolveAbortUsage(
-              { inputTokens: usage?.prompt_tokens, outputTokens: usage?.completion_tokens },
+              {
+                inputTokens: usage?.prompt_tokens,
+                outputTokens: usage?.completion_tokens,
+                ...openAiCacheFields(usage),
+              },
               opts,
               text,
             ),
@@ -241,15 +247,17 @@ export class ChatGptStrategy implements LlmStrategy {
   private toResponse(
     text: string,
     model: string,
-    usage: { prompt_tokens?: number; completion_tokens?: number } | undefined,
+    usage: OpenAiCompatibleUsage | null | undefined,
     finishReason: string | undefined,
   ): LlmResponse {
     return {
       text,
       model,
       usage: {
+        // `prompt_tokens` already includes `cached_tokens`.
         inputTokens: usage?.prompt_tokens ?? 0,
         outputTokens: usage?.completion_tokens ?? 0,
+        ...cacheUsageFields(openAiCacheFields(usage ?? undefined)),
       },
       truncated: finishReason === "length",
     };

@@ -5,8 +5,9 @@ import {
   LlmKeyValidationError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { cacheUsageFields } from "../usage-cache";
 import { resolveAbortUsage } from "../usage-estimate";
-import { assertExactlyOnePromptSource } from "../validate-generate-options";
+import { assertApiKeyIfRequired, assertExactlyOnePromptSource } from "../validate-generate-options";
 import type {
   LlmAttachment,
   LlmGenerateOptions,
@@ -18,6 +19,24 @@ import type {
 interface GeminiUsageMetadata {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
+  /**
+   * Tokens of the prompt served from cached content (`UsageMetadata` in
+   * both `@google/generative-ai` and `@google/genai`); `promptTokenCount`
+   * already includes them.
+   */
+  cachedContentTokenCount?: number;
+}
+
+/** `LlmUsage` from Gemini usage metadata (cache count included in the prompt count). */
+function toLlmUsage(usage: GeminiUsageMetadata | undefined): LlmResponse["usage"] {
+  return {
+    inputTokens: usage?.promptTokenCount ?? 0,
+    outputTokens: usage?.candidatesTokenCount ?? 0,
+    ...cacheUsageFields({
+      cacheReadInputTokens: usage?.cachedContentTokenCount,
+      inputTokensIncludeCache: true,
+    }),
+  };
 }
 
 type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } };
@@ -112,7 +131,12 @@ function wrapStreamAbort(
     partialThinking,
     cause: err,
     ...resolveAbortUsage(
-      { inputTokens: usage?.promptTokenCount, outputTokens: usage?.candidatesTokenCount },
+      {
+        inputTokens: usage?.promptTokenCount,
+        outputTokens: usage?.candidatesTokenCount,
+        cacheReadInputTokens: usage?.cachedContentTokenCount,
+        inputTokensIncludeCache: true,
+      },
       opts,
       partialText,
       partialThinking,
@@ -135,10 +159,7 @@ function buildDirectResponse(
   return {
     text: response.text(),
     model: modelName,
-    usage: {
-      inputTokens: usage?.promptTokenCount ?? 0,
-      outputTokens: usage?.candidatesTokenCount ?? 0,
-    },
+    usage: toLlmUsage(usage),
     truncated: finishReason === "MAX_TOKENS",
   };
 }
@@ -205,10 +226,7 @@ function finishVertexResult(acc: VertexAccumulator, modelName: string): LlmRespo
   return {
     text: acc.text,
     model: modelName,
-    usage: {
-      inputTokens: acc.usage?.promptTokenCount ?? 0,
-      outputTokens: acc.usage?.candidatesTokenCount ?? 0,
-    },
+    usage: toLlmUsage(acc.usage),
     truncated: acc.finishReason === "MAX_TOKENS",
     ...(acc.thinking ? { thinking: acc.thinking } : {}),
   };
@@ -258,6 +276,7 @@ export class GeminiStrategy implements LlmStrategy {
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
     assertExactlyOnePromptSource(opts);
+    assertApiKeyIfRequired(opts);
 
     if (opts.signal?.aborted) {
       throw opts.signal.reason ?? new Error("gemini request aborted before it started");
