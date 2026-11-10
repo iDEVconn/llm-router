@@ -9,6 +9,7 @@ coverage
 # editor
 .vscode
 .idea
+.claude
 
 # env
 .env

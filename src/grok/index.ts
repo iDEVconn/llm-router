@@ -5,8 +5,9 @@ import {
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { cacheUsageFields, openAiCacheFields, type OpenAiCompatibleUsage } from "../usage-cache";
 import { resolveAbortUsage } from "../usage-estimate";
-import { assertExactlyOnePromptSource } from "../validate-generate-options";
+import { assertApiKeyIfRequired, assertExactlyOnePromptSource } from "../validate-generate-options";
 import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
@@ -69,6 +70,7 @@ export class GrokStrategy implements LlmStrategy {
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
     assertExactlyOnePromptSource(opts);
+    assertApiKeyIfRequired(opts);
 
     for (const attachment of opts.attachments ?? []) {
       if (!SUPPORTED_IMAGE_TYPES.has(attachment.mimetype)) {
@@ -163,7 +165,7 @@ export class GrokStrategy implements LlmStrategy {
     promptSource: Pick<LlmGenerateOptions, "prompt" | "messages" | "systemPrompt">,
   ): Promise<LlmResponse> {
     let text = "";
-    let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;
+    let usage: OpenAiCompatibleUsage | undefined;
     try {
       const stream = await client.chat.completions.create(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -177,7 +179,7 @@ export class GrokStrategy implements LlmStrategy {
       for await (const chunk of stream as unknown as AsyncIterable<{
         choices?: Array<{ delta?: { content?: string | null }; finish_reason?: string | null }>;
         model?: string;
-        usage?: { prompt_tokens?: number; completion_tokens?: number };
+        usage?: OpenAiCompatibleUsage;
       }>) {
         if (chunk.model) model = chunk.model;
         if (chunk.usage) usage = chunk.usage;
@@ -216,7 +218,11 @@ export class GrokStrategy implements LlmStrategy {
           partialText: text,
           cause: err,
           ...resolveAbortUsage(
-            { inputTokens: usage?.prompt_tokens, outputTokens: usage?.completion_tokens },
+            {
+              inputTokens: usage?.prompt_tokens,
+              outputTokens: usage?.completion_tokens,
+              ...openAiCacheFields(usage),
+            },
             promptSource,
             text,
           ),
@@ -232,7 +238,7 @@ export class GrokStrategy implements LlmStrategy {
       finish_reason?: string | null;
     }>;
     model: string;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: OpenAiCompatibleUsage;
   }): LlmResponse {
     const rawContent = raw.choices?.[0]?.message?.content ?? "";
     const text = typeof rawContent === "string" ? rawContent : "";
@@ -241,8 +247,10 @@ export class GrokStrategy implements LlmStrategy {
       text,
       model: raw.model,
       usage: {
+        // `prompt_tokens` already includes `cached_tokens`.
         inputTokens: raw.usage?.prompt_tokens ?? 0,
         outputTokens: raw.usage?.completion_tokens ?? 0,
+        ...cacheUsageFields(openAiCacheFields(raw.usage)),
       },
       truncated: raw.choices?.[0]?.finish_reason === "length",
     };

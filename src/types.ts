@@ -46,8 +46,19 @@ export interface LlmGenerateOptions {
   attachments?: LlmAttachment[];
   /** Override the strategy's `defaultModel`. Blank/whitespace = use default. */
   model?: string;
-  /** BYOK — bypass the strategy's platform key for this single call. */
+  /**
+   * BYOK — bypass the strategy's platform key for this single call. An
+   * empty or undefined value falls back to the platform key (unless
+   * `requireApiKey` is true).
+   */
   apiKey?: string;
+  /**
+   * When true, `generate()` throws `InvalidGenerateOptionsError` before any
+   * network call if `apiKey` is missing or blank, instead of silently using
+   * the strategy's platform key (or Vertex ADC). Use it on calls that must
+   * be billed to the caller's own key. Default false (unchanged behaviour).
+   */
+  requireApiKey?: boolean;
   /** Maximum output tokens. Provider-specific defaults apply when omitted. */
   maxTokens?: number;
   /**
@@ -92,9 +103,63 @@ export interface LlmGenerateOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Token counts for one call.
+ *
+ * `inputTokens` keeps each provider's own meaning (unchanged since the
+ * first release):
+ *  - Claude: Anthropic's `input_tokens`, i.e. the UNCACHED input only.
+ *    Cache writes and cache reads are NOT in it; they are reported in
+ *    `cacheCreationInputTokens` / `cacheReadInputTokens` on top of it.
+ *  - ChatGPT, Grok, DeepSeek, Gemini: the provider's full prompt count
+ *    (`prompt_tokens` / `promptTokenCount`), which ALREADY INCLUDES the
+ *    cached tokens; the adapters then set `inputTokensIncludeCache: true`.
+ *
+ * The cache fields are optional and additive: undefined when the provider
+ * reported nothing, `0` when it reported zero, never NaN or negative.
+ * `splitInputTokens()` turns any usage into disjoint
+ * uncached / cache-write / cache-read counts, and `calculateCost()` prices
+ * them, so callers do not need per-provider rules. By hand:
+ *
+ *  - `inputTokensIncludeCache` not true (Claude):
+ *    cost = inputTokens*pIn + cacheCreationInputTokens*pWrite
+ *         + cacheReadInputTokens*pRead + outputTokens*pOut
+ *    Anthropic rates are per model
+ *    (https://platform.claude.com/docs/en/about-claude/pricing):
+ *    pWrite = 1.25*pIn (5-minute cache, the only TTL this package
+ *    requests; 1-hour writes would be 2*pIn); pRead = 0.1*pIn by default,
+ *    but 0.05*pIn on Opus 5.5 / Sonnet 5.5 and 0.025*pIn on
+ *    Fable / Mythos 5.1 and 5.2. Take pRead from the pricing page for
+ *    the exact model.
+ *  - `inputTokensIncludeCache: true` (OpenAI-compatible, DeepSeek, Gemini):
+ *    uncached = inputTokens - cacheReadInputTokens - (cacheCreationInputTokens ?? 0)
+ *    cost = uncached*pIn + cacheReadInputTokens*pRead + outputTokens*pOut
+ */
 export interface LlmUsage {
+  /** Provider-reported input tokens; see the interface doc for what each provider includes. */
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Input tokens written to the provider's prompt cache on this call
+   * (Claude: `cache_creation_input_tokens`, billed above the input rate).
+   * Undefined when the provider reported none.
+   */
+  cacheCreationInputTokens?: number;
+  /**
+   * Input tokens served from the provider's prompt cache on this call
+   * (Claude: `cache_read_input_tokens`; OpenAI/Grok:
+   * `prompt_tokens_details.cached_tokens`; DeepSeek:
+   * `prompt_cache_hit_tokens`; Gemini: `cachedContentTokenCount`).
+   * Undefined when the provider reported none.
+   */
+  cacheReadInputTokens?: number;
+  /**
+   * True when `inputTokens` already contains the cache counts above
+   * (OpenAI-compatible providers, DeepSeek, Gemini). Absent/false means the
+   * cache counts are in addition to `inputTokens` (Claude). Only set when a
+   * cache field is set.
+   */
+  inputTokensIncludeCache?: boolean;
 }
 
 export interface LlmResponse {

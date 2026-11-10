@@ -69,6 +69,9 @@ const byok = await strategy.generate({
   attachments: [{ data: fileBuffer, mimetype: "image/png" }],
   apiKey: user.claudeApiKey,
   model: user.preferredModel,
+  // Optional: throw InvalidGenerateOptionsError instead of silently using the
+  // platform key when user.claudeApiKey is empty/undefined.
+  requireApiKey: true,
 });
 
 // Live key check (used in BYOK save flows)
@@ -181,9 +184,13 @@ account for the tokens spent:
   in the final chunk, so a mid-stream abort is almost always estimated
   (usage is reported only if that final usage chunk had already arrived).
   Provider-reported numbers mean the same as on a normal response: Claude's
-  `message_start` `input_tokens` excludes cache read/creation tokens, and
-  Gemini's `candidatesTokenCount` excludes thought tokens. Only an
-  estimated output side counts received thinking text.
+  `message_start` `input_tokens` excludes cache read/creation tokens (they
+  are carried as `cacheCreationInputTokens` / `cacheReadInputTokens`, see
+  [Token usage and prompt caching](#token-usage-and-prompt-caching)), and
+  Gemini's `candidatesTokenCount` excludes thought tokens. Cache counters
+  are carried only when the input side was provider-reported (an estimated
+  input already covers the whole prompt). Only an estimated output side
+  counts received thinking text.
 - `cause` — the original provider/abort error (for ChatGPT/Grok/DeepSeek,
   whose SDK ends an aborted stream silently, this is `signal.reason`);
   `providerName`.
@@ -292,6 +299,56 @@ subtask's failure never aborts the run — see the
 [task-orchestrator design doc](https://github.com/iDEVconn/llm-router/blob/main/docs/superpowers/specs/2026-08-25-task-orchestrator-design.md)
 for the full design.
 
+## Token usage and prompt caching
+
+Every `LlmResponse.usage` (and `LlmAbortedError.usage`) has `inputTokens` and
+`outputTokens`, plus optional prompt-cache counters:
+
+| Field | Meaning |
+| --- | --- |
+| `cacheCreationInputTokens?` | input tokens written to the prompt cache on this call |
+| `cacheReadInputTokens?` | input tokens served from the prompt cache on this call |
+| `inputTokensIncludeCache?` | `true` when `inputTokens` already contains the two counters above |
+
+The counters are `undefined` when the provider reported nothing and `0` when it
+reported zero; they are never NaN or negative. `inputTokens` keeps each
+provider's own meaning, so existing code sees the same numbers as before:
+
+| Provider | `inputTokens` | `cacheCreationInputTokens` | `cacheReadInputTokens` | `inputTokensIncludeCache` |
+| --- | --- | --- | --- | --- |
+| Claude | `input_tokens` (uncached only) | `cache_creation_input_tokens` | `cache_read_input_tokens` | not set (counters are extra) |
+| ChatGPT, Grok | `prompt_tokens` (includes cached) | not reported | `prompt_tokens_details.cached_tokens` | `true` |
+| DeepSeek | `prompt_tokens` (= hit + miss) | not reported | `prompt_cache_hit_tokens` (fallback `prompt_tokens_details.cached_tokens`) | `true` |
+| Gemini (direct and Vertex) | `promptTokenCount` (includes cached) | not reported | `cachedContentTokenCount` | `true` |
+
+Claude puts `cache_control: ephemeral` on every `systemPrompt`, so a call with a
+large system prompt is mostly cache writes (first call) or cache reads (later
+calls), which `inputTokens` alone does not show. To bill such calls correctly,
+read the counters, or let `splitInputTokens` / `calculateCost` do it:
+
+```ts
+import { calculateCost, splitInputTokens } from "@idevconn/llm-router";
+
+const { uncachedInputTokens, cacheCreationInputTokens, cacheReadInputTokens, totalInputTokens } =
+  splitInputTokens(res.usage); // disjoint counts for any provider
+
+// By hand for Claude (pRead is per model, see below):
+// cost = inputTokens*pIn + cacheCreationInputTokens*pIn*1.25
+//      + cacheReadInputTokens*pRead + outputTokens*pOut
+// For providers with inputTokensIncludeCache: true:
+// cost = (inputTokens - cacheReadInputTokens)*pIn + cacheReadInputTokens*pCachedIn + outputTokens*pOut
+```
+
+Claude cache rates are per model; take them from the
+[Anthropic pricing page](https://platform.claude.com/docs/en/about-claude/pricing):
+
+- 5-minute cache write: 1.25 x input. This package only sends the default
+  5-minute `cache_control`, so every `cacheCreationInputTokens` is a 5-minute
+  write (1-hour writes, 2 x input, are never requested).
+- Cache read: 0.1 x input by default, but 0.05 x input on Claude Opus 5.5 and
+  Claude Sonnet 5.5, and 0.025 x input on Claude Fable / Mythos 5.1 and 5.2.
+  Do not assume 0.1 x for every model.
+
 ## Cost control
 
 `calculateCost` turns `LlmResponse.usage` into a dollar figure using a pricing
@@ -313,6 +370,36 @@ const budgeted = withBudget(strategy, {
   onCost: ({ provider, model, cost }) => console.log(provider, model, cost),
 });
 ```
+
+Each pricing entry may also carry `cacheWritePer1M` and `cacheReadPer1M`.
+`calculateCost` prices the cache counters at those rates (falling back to
+`inputPer1M` when a rate is missing) and never counts tokens twice for
+providers whose `inputTokens` already includes them. A usage without cache
+counters costs exactly what it did before.
+
+```ts
+const pricing: PricingTable = {
+  claude: {
+    // 5m write 1.25 x input, read 0.1 x input
+    "claude-sonnet-4-5": { inputPer1M: 3, outputPer1M: 15, cacheWritePer1M: 3.75, cacheReadPer1M: 0.3 },
+    // 5m write 1.25 x input, read 0.05 x input
+    "claude-sonnet-5-5": { inputPer1M: 2, outputPer1M: 10, cacheWritePer1M: 2.5, cacheReadPer1M: 0.1 },
+  },
+};
+```
+
+**Claude budgets now see higher costs.** Claude responses now carry their
+cache counters, so `maxCostPerCall`, `maxCostTotal` and `onCost` see the
+cache tokens that were left out before. Add `cacheWritePer1M` /
+`cacheReadPer1M` to your Claude pricing entries to price them exactly.
+Without them, cache tokens are priced at the full `inputPer1M` rate: cache
+reads become a conservative over-estimate (10-40x their real price) and
+5-minute writes are priced at 0.8x their real price. Example with
+`claude-sonnet-4-5`, a 50k-token cached system prompt read, 1k input and 1k
+output: $0.018 before this change, $0.168 now with a table that has no cache
+rates, $0.033 with the cache rates (the true cost). A `maxCostPerCall: 0.05`
+that used to pass would now throw `BudgetExceededError`, after the call was
+already paid for, unless the cache rates are added.
 
 Cost is only known after a call returns (token counts come from the
 response), so `maxCostPerCall` is checked against the call that just

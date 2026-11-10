@@ -28,3 +28,18 @@ export function assertExactlyOnePromptSource(
     );
   }
 }
+
+/**
+ * Enforces `requireApiKey`: when set, a missing or blank `apiKey` throws
+ * before any SDK client is built, so the call can never silently fall
+ * back to the strategy's platform key (or Vertex ADC). No-op otherwise.
+ */
+export function assertApiKeyIfRequired(
+  opts: Pick<LlmGenerateOptions, "apiKey" | "requireApiKey">,
+): void {
+  if (opts.requireApiKey && !opts.apiKey?.trim()) {
+    throw new InvalidGenerateOptionsError(
+      "`requireApiKey` is set but `apiKey` is missing or blank; refusing to fall back to the platform key.",
+    );
+  }
+}

@@ -1,4 +1,5 @@
 import type { LlmGenerateOptions, LlmUsage } from "./types";
+import { cacheUsageFields } from "./usage-cache";
 
 /**
  * Deliberately rough token estimate: `Math.ceil(chars / 4)`, counting
@@ -29,12 +30,19 @@ export function estimateInputTokens(
 export interface ReportedUsage {
   inputTokens?: number | null;
   outputTokens?: number | null;
+  /** Prompt-cache counters reported with the input side (see `LlmUsage`). */
+  cacheCreationInputTokens?: number | null;
+  cacheReadInputTokens?: number | null;
+  /** True when the provider's input count already contains the cache counters. */
+  inputTokensIncludeCache?: boolean;
 }
 
 /**
  * Combines whatever usage the provider reported mid-stream with rough
  * estimates for the missing side(s). `usageEstimated` is false only when
- * BOTH sides were provider-reported.
+ * BOTH sides were provider-reported. Reported cache counters are kept
+ * only when the input side was reported too: an estimated input already
+ * covers the whole prompt, so adding cache counts would double-count.
  */
 export function resolveAbortUsage(
   reported: ReportedUsage,
@@ -50,6 +58,7 @@ export function resolveAbortUsage(
       outputTokens: hasOutput
         ? (reported.outputTokens as number)
         : estimateTokens(partialText + (partialThinking ?? "")),
+      ...(hasInput ? cacheUsageFields(reported) : {}),
     },
     usageEstimated: !(hasInput && hasOutput),
   };

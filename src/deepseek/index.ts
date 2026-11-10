@@ -5,8 +5,9 @@ import {
   UnsupportedAttachmentError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { cacheUsageFields } from "../usage-cache";
 import { resolveAbortUsage, type ReportedUsage } from "../usage-estimate";
-import { assertExactlyOnePromptSource } from "../validate-generate-options";
+import { assertApiKeyIfRequired, assertExactlyOnePromptSource } from "../validate-generate-options";
 import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
@@ -17,10 +18,31 @@ interface DeepSeekDelta {
   reasoning_content?: string | null;
 }
 
+/**
+ * DeepSeek usage (api-docs.deepseek.com, "Create Chat Completion"):
+ * `prompt_tokens` = `prompt_cache_hit_tokens` + `prompt_cache_miss_tokens`
+ * (top-level in the example response); the OpenAI-style
+ * `prompt_tokens_details.cached_tokens` is also returned.
+ */
+interface DeepSeekUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_cache_hit_tokens?: number | null;
+  prompt_cache_miss_tokens?: number | null;
+  prompt_tokens_details?: { cached_tokens?: number | null } | null;
+}
+
+/** Cache-hit count: top-level `prompt_cache_hit_tokens`, else `prompt_tokens_details.cached_tokens`. */
+function deepSeekCacheHit(usage: DeepSeekUsage | undefined): number | null | undefined {
+  return typeof usage?.prompt_cache_hit_tokens === "number"
+    ? usage.prompt_cache_hit_tokens
+    : usage?.prompt_tokens_details?.cached_tokens;
+}
+
 interface DeepSeekStreamChunk {
   choices?: Array<{ delta?: DeepSeekDelta; finish_reason?: string | null }>;
   model?: string;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: DeepSeekUsage;
 }
 
 interface DeepSeekCompletion {
@@ -29,7 +51,7 @@ interface DeepSeekCompletion {
     finish_reason?: string | null;
   }>;
   model: string;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: DeepSeekUsage;
 }
 
 function shapeResponse(
@@ -39,11 +61,17 @@ function shapeResponse(
   outputTokens: number,
   truncated: boolean,
   thinking: string | undefined,
+  cacheReadInputTokens?: number | null,
 ): LlmResponse {
   return {
     text,
     model,
-    usage: { inputTokens, outputTokens },
+    usage: {
+      // `prompt_tokens` already includes the cache hits.
+      inputTokens,
+      outputTokens,
+      ...cacheUsageFields({ cacheReadInputTokens, inputTokensIncludeCache: true }),
+    },
     truncated,
     ...(thinking !== undefined ? { thinking } : {}),
   };
@@ -91,6 +119,7 @@ export class DeepSeekStrategy implements LlmStrategy {
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
     assertExactlyOnePromptSource(opts);
+    assertApiKeyIfRequired(opts);
 
     const attachments = opts.attachments ?? [];
     if (attachments.length > 0) {
@@ -150,6 +179,7 @@ export class DeepSeekStrategy implements LlmStrategy {
         let model = modelName;
         let inputTokens = 0;
         let outputTokens = 0;
+        let cacheRead: number | null | undefined;
         let truncated = false;
         let finished = false;
 
@@ -173,6 +203,9 @@ export class DeepSeekStrategy implements LlmStrategy {
             outputTokens = chunk.usage.completion_tokens ?? 0;
             reported.inputTokens = chunk.usage.prompt_tokens;
             reported.outputTokens = chunk.usage.completion_tokens;
+            cacheRead = deepSeekCacheHit(chunk.usage);
+            reported.cacheReadInputTokens = cacheRead;
+            reported.inputTokensIncludeCache = true;
           }
         }
 
@@ -184,7 +217,15 @@ export class DeepSeekStrategy implements LlmStrategy {
           throw opts.signal.reason ?? new DOMException("aborted", "AbortError");
         }
 
-        return shapeResponse(text, model, inputTokens, outputTokens, truncated, reasoning || undefined);
+        return shapeResponse(
+          text,
+          model,
+          inputTokens,
+          outputTokens,
+          truncated,
+          reasoning || undefined,
+          cacheRead,
+        );
       } catch (err) {
         // DeepSeek (OpenAI-compatible) reports usage only in the final
         // chunk, so an abort mid-stream almost always falls back to the
@@ -223,6 +264,7 @@ export class DeepSeekStrategy implements LlmStrategy {
       response.usage?.completion_tokens ?? 0,
       response.choices[0]?.finish_reason === "length",
       reasoning ?? undefined,
+      deepSeekCacheHit(response.usage),
     );
   }
 

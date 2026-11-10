@@ -5,8 +5,9 @@ import {
   LlmKeyValidationError,
   UnsupportedThinkingModeError,
 } from "../errors";
+import { cacheUsageFields, toTokenCount } from "../usage-cache";
 import { resolveAbortUsage, type ReportedUsage } from "../usage-estimate";
-import { assertExactlyOnePromptSource } from "../validate-generate-options";
+import { assertApiKeyIfRequired, assertExactlyOnePromptSource } from "../validate-generate-options";
 import type { LlmGenerateOptions, LlmMessage, LlmResponse, LlmStrategy } from "../types";
 
 const SUPPORTED_IMAGE_TYPES = new Set([
@@ -70,6 +71,7 @@ export class ClaudeStrategy implements LlmStrategy {
 
   async generate(opts: LlmGenerateOptions): Promise<LlmResponse> {
     assertExactlyOnePromptSource(opts);
+    assertApiKeyIfRequired(opts);
 
     const client = opts.apiKey
       ? new Anthropic({ apiKey: opts.apiKey })
@@ -156,17 +158,28 @@ export class ClaudeStrategy implements LlmStrategy {
         throw opts.signal.reason ?? new Error("claude request aborted before it started");
       }
       let partialText = "";
-      // Anthropic reports input tokens on `message_start` and cumulative
-      // output tokens on `message_delta`; keep whatever arrived so an
-      // aborted stream can still account for them.
+      // Anthropic reports input tokens and the cache counters on
+      // `message_start` and cumulative output tokens on `message_delta`.
+      // `message_delta.usage` input/cache counters are cumulative too: when
+      // non-null they win (the SDK's own accumulator does the same). Keep
+      // whatever arrived so an aborted stream can still account for them.
       const reported: ReportedUsage = {};
       try {
         const stream = client.messages.stream(params, requestOptions);
         for await (const event of stream) {
           if (event.type === "message_start") {
-            reported.inputTokens = event.message.usage?.input_tokens;
+            const usage = event.message.usage;
+            reported.inputTokens = usage?.input_tokens;
+            reported.cacheCreationInputTokens = usage?.cache_creation_input_tokens;
+            reported.cacheReadInputTokens = usage?.cache_read_input_tokens;
           } else if (event.type === "message_delta") {
             reported.outputTokens = event.usage?.output_tokens;
+            const input = toTokenCount(event.usage?.input_tokens);
+            if (input !== undefined) reported.inputTokens = input;
+            const creation = toTokenCount(event.usage?.cache_creation_input_tokens);
+            const read = toTokenCount(event.usage?.cache_read_input_tokens);
+            if (creation !== undefined) reported.cacheCreationInputTokens = creation;
+            if (read !== undefined) reported.cacheReadInputTokens = read;
           } else if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
             partialText += event.delta.text;
             this.safeOnToken(opts.onToken, event.delta.text);
@@ -239,8 +252,20 @@ export class ClaudeStrategy implements LlmStrategy {
       text,
       model: response.model,
       usage: {
+        // Anthropic's `input_tokens` excludes cache writes/reads; those are
+        // reported separately (total input = the three summed).
+        // `cache_creation_input_tokens` is reported as one number: this
+        // adapter only ever sends the default 5-minute ephemeral
+        // `cache_control` (no `ttl`), so every write is billed at the 5m
+        // rate and ignoring the `cache_creation.ephemeral_1h_input_tokens`
+        // breakdown (billed at 2x input) is correct today. Revisit this if a
+        // `ttl: "1h"` cache_control is ever requested.
         inputTokens: response.usage.input_tokens ?? 0,
         outputTokens: response.usage.output_tokens ?? 0,
+        ...cacheUsageFields({
+          cacheCreationInputTokens: response.usage.cache_creation_input_tokens,
+          cacheReadInputTokens: response.usage.cache_read_input_tokens,
+        }),
       },
       truncated: response.stop_reason === "max_tokens",
       thinking: thinkingText.length > 0 ? thinkingText : undefined,
